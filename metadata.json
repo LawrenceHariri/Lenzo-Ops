@@ -1,0 +1,6 @@
+{
+  "name": "Lenzo Ops Hub",
+  "description": "Operations hub and data layer for Lenzo, syncing with Google Sheets via Google Apps Script.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
