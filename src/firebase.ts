@@ -32,6 +32,7 @@ googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets');
 googleProvider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
 googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
 googleProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
+googleProvider.addScope('https://www.googleapis.com/auth/calendar.events');
 googleProvider.setCustomParameters({
   prompt: 'select_account',
 });

@@ -20,6 +20,7 @@ import { formatDisplayDate, today } from '../logic';
 import { useOpsHub } from '../store';
 import { TaskRecord } from '../types';
 import { fireTaskDoneConfetti } from '../utils/confetti';
+import { RemindMeModal } from './RemindMeModal';
 
 interface TaskEditDrawerProps {
   task: TaskRecord | null;
@@ -35,6 +36,7 @@ export const TaskEditDrawer: React.FC<TaskEditDrawerProps> = ({
 
   const [formData, setFormData] = useState<Partial<TaskRecord>>({});
   const [isSaving, setIsSaving] = useState(false);
+  const [remindModalOpen, setRemindModalOpen] = useState(false);
 
   useEffect(() => {
     if (task) {
@@ -248,9 +250,19 @@ export const TaskEditDrawer: React.FC<TaskEditDrawerProps> = ({
           {/* Due date & Given on */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider mb-1.5">
-                Due Date
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-stone-500 uppercase tracking-wider">
+                  Due Date
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setRemindModalOpen(true)}
+                  className="text-[11px] text-amber-700 hover:text-amber-800 font-semibold hover:underline flex items-center gap-1 cursor-pointer"
+                  title="Schedule Google Calendar reminder for this task"
+                >
+                  <span>⏰ Remind me</span>
+                </button>
+              </div>
               <input
                 type="date"
                 value={formData.Due || ''}
@@ -388,6 +400,13 @@ export const TaskEditDrawer: React.FC<TaskEditDrawerProps> = ({
           </div>
         </div>
       </div>
+
+      <RemindMeModal
+        isOpen={remindModalOpen}
+        onClose={() => setRemindModalOpen(false)}
+        initialText={formData.Task || task.Task}
+        initialDate={formData.Due || task.Due}
+      />
     </div>
   );
 };

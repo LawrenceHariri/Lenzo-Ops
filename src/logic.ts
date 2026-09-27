@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { formatDateValue } from './api';
 import {
   AgentRecord,
   LeadRecord,
@@ -18,8 +19,11 @@ import {
  * If serverDate from last load is passed, uses that; otherwise uses current local date.
  */
 export function today(serverDate?: string): string {
-  if (serverDate && /^\d{4}-\d{2}-\d{2}$/.test(serverDate.trim())) {
-    return serverDate.trim();
+  if (serverDate) {
+    const cleanServer = formatDateValue(serverDate);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(cleanServer)) {
+      return cleanServer;
+    }
   }
   const d = new Date();
   const year = d.getFullYear();
@@ -32,12 +36,13 @@ export function today(serverDate?: string): string {
  * Adds N days to a YYYY-MM-DD date string, returning YYYY-MM-DD.
  */
 export function addDays(dateStr: string, days: number): string {
-  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+  const clean = formatDateValue(dateStr);
+  if (!clean || !/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
     const d = new Date();
     d.setDate(d.getDate() + days);
     return today(d.toISOString().slice(0, 10));
   }
-  const parts = dateStr.trim().split('-').map(Number);
+  const parts = clean.split('-').map(Number);
   const d = new Date(parts[0], parts[1] - 1, parts[2]);
   d.setDate(d.getDate() + days);
   const year = d.getFullYear();
@@ -63,7 +68,7 @@ export function formatDisplayDate(
     return { formatted: '—', isLate: false, isToday: false, isTomorrow: false };
   }
 
-  const cleanDate = dateStr.trim();
+  const cleanDate = formatDateValue(dateStr);
   const parts = cleanDate.split('-').map(Number);
   if (parts.length !== 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) {
     return { formatted: cleanDate, isLate: false, isToday: false, isTomorrow: false };
@@ -82,7 +87,8 @@ export function formatDisplayDate(
     return { formatted, isLate: false, isToday: false, isTomorrow: false };
   }
 
-  const todayParts = todayStr.trim().split('-').map(Number);
+  const cleanToday = formatDateValue(todayStr);
+  const todayParts = cleanToday.split('-').map(Number);
   const refDate = new Date(todayParts[0], todayParts[1] - 1, todayParts[2]);
 
   const diffTime = targetDate.getTime() - refDate.getTime();
@@ -127,20 +133,26 @@ export function isOpenTask(t: TaskRecord): boolean {
 }
 
 export function overdueTasks(tasks: TaskRecord[], todayDate: string): TaskRecord[] {
-  return (tasks || []).filter(
-    (t) => isOpenTask(t) && t.Due && t.Due.trim() !== '' && t.Due.trim() < todayDate
-  );
+  const cleanToday = formatDateValue(todayDate);
+  return (tasks || []).filter((t) => {
+    if (!isOpenTask(t)) return false;
+    const due = formatDateValue(t.Due);
+    return Boolean(due && due < cleanToday);
+  });
 }
 
 export function todayTasks(tasks: TaskRecord[], todayDate: string): TaskRecord[] {
-  return (tasks || []).filter(
-    (t) => isOpenTask(t) && t.Due && t.Due.trim() === todayDate
-  );
+  const cleanToday = formatDateValue(todayDate);
+  return (tasks || []).filter((t) => {
+    if (!isOpenTask(t)) return false;
+    const due = formatDateValue(t.Due);
+    return Boolean(due && due === cleanToday);
+  });
 }
 
 export function noDateTasks(tasks: TaskRecord[]): TaskRecord[] {
   return (tasks || []).filter(
-    (t) => isOpenTask(t) && (!t.Due || t.Due.trim() === '')
+    (t) => isOpenTask(t) && (!t.Due || !formatDateValue(t.Due))
   );
 }
 
@@ -153,8 +165,8 @@ const PRIORITY_ORDER: Record<string, number> = {
 export function sortTasks(tasks: TaskRecord[]): TaskRecord[] {
   return [...tasks].sort((a, b) => {
     // Due date first (earlier first, empty last)
-    const dueA = (a.Due || '').trim();
-    const dueB = (b.Due || '').trim();
+    const dueA = formatDateValue(a.Due);
+    const dueB = formatDateValue(b.Due);
     if (dueA && dueB && dueA !== dueB) {
       return dueA.localeCompare(dueB);
     }
@@ -174,7 +186,8 @@ export function sortTasks(tasks: TaskRecord[]): TaskRecord[] {
  * Groups tasks into Overdue, Today, This week, Later, No date
  */
 export function groupTasks(tasks: TaskRecord[], todayDate: string) {
-  const parts = todayDate.split('-').map(Number);
+  const cleanToday = formatDateValue(todayDate) || today();
+  const parts = cleanToday.split('-').map(Number);
   const cur = new Date(parts[0], parts[1] - 1, parts[2]);
   // End of current week (Sunday or +6 days)
   const dayOfWeek = cur.getDay(); // 0 is Sunday
@@ -192,12 +205,12 @@ export function groupTasks(tasks: TaskRecord[], todayDate: string) {
   const noDate: TaskRecord[] = [];
 
   tasks.forEach((t) => {
-    const due = (t.Due || '').trim();
+    const due = formatDateValue(t.Due);
     if (!due) {
       noDate.push(t);
-    } else if (due < todayDate) {
+    } else if (due < cleanToday) {
       overdue.push(t);
-    } else if (due === todayDate) {
+    } else if (due === cleanToday) {
       todayList.push(t);
     } else if (due <= endOfWeekStr) {
       thisWeek.push(t);
@@ -224,15 +237,16 @@ export function sampleFollowUpsDue(
   samples: SampleRecord[],
   todayDate: string
 ): SampleRecord[] {
+  const cleanToday = formatDateValue(todayDate);
   return (samples || []).filter((s) => {
     const stage = (s.Stage || '').trim();
-    const followUpDue = (s['Follow-up Due'] || '').trim();
-    const followUpDone = (s['Follow-up Done On'] || '').trim();
+    const followUpDue = formatDateValue(s['Follow-up Due']);
+    const followUpDone = formatDateValue(s['Follow-up Done On']);
 
     return (
       stage === 'Shipped' &&
       followUpDue !== '' &&
-      followUpDue <= todayDate &&
+      followUpDue <= cleanToday &&
       followUpDone === ''
     );
   });
@@ -253,17 +267,18 @@ export function isOpenLead(l: LeadRecord): boolean {
 }
 
 export function leadsDue(leads: LeadRecord[], todayDate: string): LeadRecord[] {
+  const cleanToday = formatDateValue(todayDate);
   return (leads || []).filter((l) => {
     if (!isOpenLead(l)) return false;
-    const nextStepDate = (l['Next Step Date'] || '').trim();
-    return nextStepDate === '' || nextStepDate <= todayDate;
+    const nextStepDate = formatDateValue(l['Next Step Date']);
+    return nextStepDate === '' || nextStepDate <= cleanToday;
   });
 }
 
 export function leadsNeedingNextStep(leads: LeadRecord[]): LeadRecord[] {
   return (leads || []).filter((l) => {
     if (!isOpenLead(l)) return false;
-    const nextStepDate = (l['Next Step Date'] || '').trim();
+    const nextStepDate = formatDateValue(l['Next Step Date']);
     return nextStepDate === '';
   });
 }
@@ -276,11 +291,12 @@ export function agentsNeeding1on1(
   agents: AgentRecord[],
   todayDate: string
 ): AgentRecord[] {
+  const cleanToday = formatDateValue(todayDate);
   return (agents || []).filter((a) => {
     const stage = (a.Stage || '').trim();
     if (['Left', 'Paused'].includes(stage)) return false;
-    const next1on1 = (a['Next 1:1'] || '').trim();
-    return next1on1 === '' || next1on1 <= todayDate;
+    const next1on1 = formatDateValue(a['Next 1:1']);
+    return next1on1 === '' || next1on1 <= cleanToday;
   });
 }
 

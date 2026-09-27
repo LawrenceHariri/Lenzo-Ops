@@ -30,9 +30,11 @@ import {
   User,
   Users,
 } from 'lucide-react';
+import { CancelReminderModal } from '../components/CancelReminderModal';
 import { MarkShippedModal } from '../components/MarkShippedModal';
 import { ProjectDrawer } from '../components/ProjectDrawer';
 import { QuickAddModal } from '../components/QuickAddModal';
+import { RemindMeModal } from '../components/RemindMeModal';
 import { SaveStateModal } from '../components/SaveStateModal';
 import { TaskEditDrawer } from '../components/TaskEditDrawer';
 import {
@@ -53,7 +55,14 @@ import {
   todayTasks,
 } from '../logic';
 import { useOpsHub } from '../store';
-import { CoachNoteRecord, LeadRecord, ProjectRecord, SampleRecord, TaskRecord } from '../types';
+import {
+  CoachNoteRecord,
+  LeadRecord,
+  ProjectRecord,
+  ReminderRecord,
+  SampleRecord,
+  TaskRecord,
+} from '../types';
 import { fireTaskDoneConfetti } from '../utils/confetti';
 
 interface TodayPageProps {
@@ -79,6 +88,14 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
   const [selectedTaskToEdit, setSelectedTaskToEdit] = useState<TaskRecord | null>(null);
   const [sampleToShip, setSampleToShip] = useState<SampleRecord | null>(null);
   const [saveStateOpen, setSaveStateOpen] = useState(false);
+  const [remindMeModalOpen, setRemindMeModalOpen] = useState(false);
+  const [reminderToCancel, setReminderToCancel] = useState<ReminderRecord | null>(null);
+
+  const scheduledReminders = useMemo(() => {
+    return (tables.Reminders || []).filter(
+      (r) => (r.Status || '').trim() === 'Scheduled'
+    );
+  }, [tables.Reminders]);
 
   // Call outcome modal for sample follow-up
   const [callDoneSample, setCallDoneSample] = useState<SampleRecord | null>(null);
@@ -467,6 +484,79 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
           </p>
         </section>
       )}
+
+      {/* ⏰ Reminders Section */}
+      <section className="bg-white rounded-3xl p-6 sm:p-7 border border-stone-200/80 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-600 border border-amber-200/80 flex items-center justify-center font-bold text-sm">
+              ⏰
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-semibold text-stone-900 text-base">
+                  Reminders
+                </h3>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-mono">
+                  {scheduledReminders.length}
+                </span>
+              </div>
+              <p className="text-xs text-stone-400">
+                Google Calendar events &amp; Sheet sync
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setRemindMeModalOpen(true)}
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-2xl text-xs font-semibold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer active:scale-95"
+          >
+            <span>⏰ Remind me</span>
+          </button>
+        </div>
+
+        {scheduledReminders.length === 0 ? (
+          <div className="p-4 bg-stone-50 rounded-2xl border border-dashed border-stone-200 text-center space-y-1">
+            <p className="text-xs text-stone-500">No active scheduled reminders.</p>
+            <p className="text-[11px] text-stone-400">
+              Click &quot;Remind me&quot; to book an event with a popup notification in Google Calendar.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {scheduledReminders.map((rem, idx) => (
+              <div
+                key={rem.ReminderID || rem._row || idx}
+                className="p-4 rounded-2xl bg-amber-50/40 border border-amber-200/80 flex items-start justify-between gap-3 transition-all hover:bg-amber-50/70"
+              >
+                <div className="space-y-1.5 min-w-0">
+                  <div className="font-semibold text-xs text-stone-900 leading-snug line-clamp-2">
+                    {rem.Text}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-stone-500">
+                    <span className="font-mono text-amber-900 font-semibold bg-white px-2 py-0.5 rounded-md border border-amber-200">
+                      {rem.When}
+                    </span>
+                    <span className="text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[10px]">
+                      Scheduled
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setReminderToCancel(rem)}
+                  className="px-2.5 py-1 text-[11px] text-rose-600 hover:text-rose-800 hover:bg-rose-50 border border-rose-200 rounded-xl transition-colors font-medium shrink-0 cursor-pointer"
+                  title="Cancel reminder and delete from Google Calendar"
+                >
+                  Cancel
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {/* Claude asks section */}
       {claudeNotes.length > 0 && (
@@ -1285,6 +1375,17 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
           setOffRampInitialProject(undefined);
         }}
         initialProject={offRampInitialProject}
+      />
+
+      {/* Reminders Modals */}
+      <RemindMeModal
+        isOpen={remindMeModalOpen}
+        onClose={() => setRemindMeModalOpen(false)}
+      />
+
+      <CancelReminderModal
+        reminder={reminderToCancel}
+        onClose={() => setReminderToCancel(null)}
       />
     </div>
   );

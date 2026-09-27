@@ -18,6 +18,7 @@ import { GoogleSignInModal } from './components/GoogleSignInModal';
 import { Navigation, NavTab } from './components/Navigation';
 import { OnRampScreen } from './components/OnRampScreen';
 import { PinPadScreen } from './components/PinPadScreen';
+import { RemindMeModal } from './components/RemindMeModal';
 import { SettingsScreen } from './components/SettingsScreen';
 import { ToastContainer } from './components/ToastContainer';
 import {
@@ -59,6 +60,7 @@ function MainApp() {
 
   const [currentTab, setCurrentTab] = useState<NavTab>('today');
   const [showSettings, setShowSettings] = useState(false);
+  const [remindMeOpen, setRemindMeOpen] = useState(false);
 
   const currentDate = today(serverDate);
 
@@ -259,6 +261,16 @@ function MainApp() {
               </button>
             )}
 
+            {/* Quick "⏰ Remind me" button */}
+            <button
+              onClick={() => setRemindMeOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-amber-50 border border-amber-200 hover:bg-amber-100/80 text-xs font-semibold text-amber-900 transition-colors shadow-2xs cursor-pointer active:scale-95"
+              title="Schedule a reminder via Google Calendar"
+            >
+              <span>⏰</span>
+              <span className="hidden sm:inline">Remind me</span>
+            </button>
+
             {/* Quick settings shortcut on desktop */}
             <button
               onClick={() => setShowSettings(true)}
@@ -307,6 +319,12 @@ function MainApp() {
           <SettingsScreen onClose={() => setShowSettings(false)} />
         </div>
       )}
+
+      {/* Remind Me Modal */}
+      <RemindMeModal
+        isOpen={remindMeOpen}
+        onClose={() => setRemindMeOpen(false)}
+      />
     </div>
   );
 }

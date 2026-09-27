@@ -36,9 +36,14 @@ import {
   AllDataResult,
   BaseRecord,
   DropdownLists,
+  ReminderRecord,
   TableName,
   TablesData,
 } from './types';
+import {
+  createCalendarReminderEvent,
+  deleteCalendarReminderEvent,
+} from './services/calendar';
 import { hashPin, verifyPin } from './utils/pin';
 
 export interface ToastItem {
@@ -107,6 +112,12 @@ interface OpsHubContextType {
     record: T,
     changes: Record<string, any>
   ) => Promise<T>;
+  createReminder: (
+    text: string,
+    when: string,
+    repeat?: string
+  ) => Promise<ReminderRecord>;
+  cancelReminder: (reminder: ReminderRecord) => Promise<void>;
   setPin: (pin: string) => Promise<void>;
   removePin: () => void;
   verifyAndUnlockPin: (
@@ -257,6 +268,36 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
         const now = new Date();
         setLastSynced(now);
         lastSyncTimeRef.current = now.getTime();
+
+        // On every app load: for each "Reminders" row with Status "Scheduled" and an empty Link,
+        // create the calendar event the same way and write the event ID into Link. (Claude adds reminders this way.)
+        const reminders = result.tables.Reminders || [];
+        const pendingReminders = reminders.filter(
+          (r) =>
+            (r.Status || '').trim() === 'Scheduled' &&
+            (!r.Link || String(r.Link).trim() === '') &&
+            r.Text &&
+            r.When
+        );
+
+        if (pendingReminders.length > 0 && token) {
+          (async () => {
+            for (const item of pendingReminders) {
+              try {
+                const eventId = await createCalendarReminderEvent(item.Text, item.When, token);
+                await apiUpdateRecord('Reminders', item, { Link: eventId });
+                setTables((prev) => ({
+                  ...prev,
+                  Reminders: (prev.Reminders || []).map((r) =>
+                    r._row === item._row ? { ...r, Link: eventId } : r
+                  ),
+                }));
+              } catch (err) {
+                console.error('Failed to sync pending reminder to Google Calendar:', err);
+              }
+            }
+          })();
+        }
       } catch (err: any) {
         const errMsg = err?.message || 'Failed to sync with Google Sheet';
         setError(errMsg);
@@ -445,6 +486,53 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     [tables, fetchData, showToast]
   );
 
+  // Reminders creation via Google Calendar and Sheets
+  const createReminder = useCallback(
+    async (text: string, when: string, repeat: string = 'None'): Promise<ReminderRecord> => {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error('Not signed in with Google. Cannot create calendar reminder.');
+      }
+
+      // 1. Create calendar event
+      const eventId = await createCalendarReminderEvent(text, when, token);
+
+      // 2. Save row in "Reminders" tab: Text, When ("YYYY-MM-DD HH:mm"), Repeat "None", Status "Scheduled", Link = the event ID
+      const newRecord = await createRecord<ReminderRecord>('Reminders', {
+        Text: text.trim(),
+        When: when.trim(),
+        Repeat: repeat || 'None',
+        Status: 'Scheduled',
+        Link: eventId,
+      });
+
+      showToast(`⏰ Reminder scheduled for ${when}`, 'success');
+      return newRecord;
+    },
+    [createRecord, showToast]
+  );
+
+  // Reminders cancellation: delete calendar event and set Status "Cancelled"
+  const cancelReminder = useCallback(
+    async (reminder: ReminderRecord): Promise<void> => {
+      const token = await getAccessToken();
+      if (reminder.Link && token) {
+        try {
+          await deleteCalendarReminderEvent(reminder.Link, token);
+        } catch (err) {
+          console.warn('Could not delete calendar event or already deleted:', err);
+        }
+      }
+
+      await updateRecord<ReminderRecord>('Reminders', reminder, {
+        Status: 'Cancelled',
+      });
+
+      showToast('Reminder cancelled', 'info');
+    },
+    [updateRecord, showToast]
+  );
+
   // PIN management
   const setPin = useCallback(async (pin: string) => {
     const hash = await hashPin(pin);
@@ -559,6 +647,8 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     testConnection,
     createRecord,
     updateRecord,
+    createReminder,
+    cancelReminder,
     setPin,
     removePin,
     verifyAndUnlockPin,

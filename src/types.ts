@@ -166,11 +166,11 @@ export interface ProjectRecord extends BaseRecord {
 
 export interface ReminderRecord extends BaseRecord {
   ReminderID?: string;
-  Task: string;
-  Owner?: string;
-  Due?: string;
-  Status: string; // e.g. "Scheduled"
-  Notes?: string;
+  Text: string;
+  When: string; // "YYYY-MM-DD HH:mm"
+  Repeat?: string; // "None"
+  Status: string; // "Scheduled" | "Cancelled"
+  Link?: string; // Google Calendar event ID
   [key: string]: any;
 }
 

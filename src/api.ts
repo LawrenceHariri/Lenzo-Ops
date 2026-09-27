@@ -177,8 +177,200 @@ export const DEFAULT_COLUMNS: Record<TableName, string[]> = {
     'Answer',
     'Answered On',
   ],
-  Reminders: ['ReminderID', 'Task', 'Due Date', 'Owner', 'Status', 'Notes'],
+  Reminders: ['ReminderID', 'Text', 'When', 'Repeat', 'Status', 'Link'],
 };
+
+// Explicit known date columns
+const KNOWN_DATE_COLUMNS = new Set([
+  'requested on',
+  'shipped on',
+  'follow-up due',
+  'follow-up done on',
+  'last contact',
+  'next step date',
+  'given on',
+  'due',
+  'started',
+  'last 1:1',
+  'next 1:1',
+  'date',
+  'follow-up',
+  'next check-in',
+  'opened',
+  'last saved',
+  'updated',
+  'answered on',
+  'due date',
+]);
+
+/**
+ * Checks whether a column name represents a datetime field ("When", "Sent At")
+ */
+export function isDateTimeColumn(columnName: string): boolean {
+  if (!columnName) return false;
+  const lower = columnName.trim().toLowerCase();
+  return lower === 'when' || lower === 'sent at' || lower === 'sent_at';
+}
+
+/**
+ * Checks whether a column name represents a date field
+ */
+export function isDateColumn(columnName: string): boolean {
+  if (!columnName) return false;
+  const lower = columnName.trim().toLowerCase();
+  if (isDateTimeColumn(columnName)) return false;
+  return (
+    KNOWN_DATE_COLUMNS.has(lower) ||
+    lower === 'date' ||
+    lower.endsWith(' on') ||
+    lower.endsWith(' date') ||
+    lower.endsWith(' due') ||
+    lower.startsWith('date ')
+  );
+}
+
+/**
+ * Normalizes any date value (including US dates, Sheet datetimes like "9/28/2026 3:00:00",
+ * ISO strings, Excel serials) into plain "YYYY-MM-DD" text-date.
+ */
+export function formatDateValue(val: any): string {
+  if (val === undefined || val === null) return '';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const str = String(val).trim();
+  if (!str) return '';
+
+  // Numeric serial from Google Sheets/Excel (e.g. 46293 or 46293.125)
+  if (/^\d{5}(?:\.\d+)?$/.test(str)) {
+    const num = parseFloat(str);
+    const date = new Date((num - 25569) * 86400 * 1000);
+    if (!isNaN(date.getTime())) {
+      const y = date.getUTCFullYear();
+      const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(date.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+  }
+
+  // Already YYYY-MM-DD or YYYY-M-D with optional time component
+  const ymdMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = ymdMatch[2].padStart(2, '0');
+    const d = ymdMatch[3].padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // M/D/YYYY or D/M/YYYY with optional time component (e.g. "9/28/2026 3:00:00")
+  const slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+.*)?$/);
+  if (slashMatch) {
+    const p1 = parseInt(slashMatch[1], 10);
+    const p2 = parseInt(slashMatch[2], 10);
+    const y = slashMatch[3];
+    let m = p1;
+    let d = p2;
+    if (p1 > 12) {
+      d = p1;
+      m = p2;
+    }
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  }
+
+  // Fallback to standard Date parsing
+  const dt = new Date(str);
+  if (!isNaN(dt.getTime())) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return str;
+}
+
+/**
+ * Normalizes any datetime value into plain "YYYY-MM-DD HH:mm".
+ * Do not include time zones or seconds.
+ */
+export function formatDateTimeValue(val: any): string {
+  if (val === undefined || val === null) return '';
+  if (val instanceof Date) {
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    const hh = String(val.getHours()).padStart(2, '0');
+    const mm = String(val.getMinutes()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hh}:${mm}`;
+  }
+  const str = String(val).trim();
+  if (!str) return '';
+
+  // Numeric serial with time fraction
+  if (/^\d{5}(?:\.\d+)?$/.test(str)) {
+    const num = parseFloat(str);
+    const date = new Date((num - 25569) * 86400 * 1000);
+    if (!isNaN(date.getTime())) {
+      const y = date.getUTCFullYear();
+      const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(date.getUTCDate()).padStart(2, '0');
+      const hh = String(date.getUTCHours()).padStart(2, '0');
+      const mm = String(date.getUTCMinutes()).padStart(2, '0');
+      return `${y}-${m}-${d} ${hh}:${mm}`;
+    }
+  }
+
+  // YYYY-MM-DD with optional time
+  const ymdTimeMatch = str.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{1,2})(?::\d{1,2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$/
+  );
+  if (ymdTimeMatch) {
+    const y = ymdTimeMatch[1];
+    const m = ymdTimeMatch[2].padStart(2, '0');
+    const d = ymdTimeMatch[3].padStart(2, '0');
+    const hh = ymdTimeMatch[4] !== undefined ? ymdTimeMatch[4].padStart(2, '0') : '00';
+    const mm = ymdTimeMatch[5] !== undefined ? ymdTimeMatch[5].padStart(2, '0') : '00';
+    return `${y}-${m}-${d} ${hh}:${mm}`;
+  }
+
+  // M/D/YYYY with optional time (e.g. "9/28/2026 3:00:00")
+  const slashTimeMatch = str.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::\d{1,2})?(?:\s*(AM|PM))?)?$/i
+  );
+  if (slashTimeMatch) {
+    const p1 = parseInt(slashTimeMatch[1], 10);
+    const p2 = parseInt(slashTimeMatch[2], 10);
+    const y = slashTimeMatch[3];
+    let m = p1;
+    let d = p2;
+    if (p1 > 12) {
+      d = p1;
+      m = p2;
+    }
+    let hh = slashTimeMatch[4] !== undefined ? parseInt(slashTimeMatch[4], 10) : 0;
+    const mm = slashTimeMatch[5] !== undefined ? slashTimeMatch[5].padStart(2, '0') : '00';
+    const ampm = slashTimeMatch[6]?.toUpperCase();
+    if (ampm === 'PM' && hh < 12) hh += 12;
+    if (ampm === 'AM' && hh === 12) hh = 0;
+
+    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')} ${String(hh).padStart(2, '0')}:${mm}`;
+  }
+
+  const dt = new Date(str);
+  if (!isNaN(dt.getTime())) {
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    const hh = String(dt.getHours()).padStart(2, '0');
+    const mm = String(dt.getMinutes()).padStart(2, '0');
+    return `${y}-${m}-${d} ${hh}:${mm}`;
+  }
+
+  return str;
+}
 
 // Fallback lists if Lists sheet is partially defined
 const DEFAULT_LISTS: DropdownLists = {
@@ -222,11 +414,11 @@ async function requireAccessToken(): Promise<string> {
  */
 export function applySamplesRule(data: Record<string, any>): void {
   if (data['Shipped On'] && !data['Follow-up Due']) {
-    const raw = String(data['Shipped On']).trim();
-    if (!raw) return;
+    const cleanShippedOn = formatDateValue(data['Shipped On']);
+    if (!cleanShippedOn) return;
 
-    // Handle YYYY-MM-DD
-    const parts = raw.split('-');
+    data['Shipped On'] = cleanShippedOn;
+    const parts = cleanShippedOn.split('-');
     if (parts.length === 3) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
@@ -239,7 +431,7 @@ export function applySamplesRule(data: Record<string, any>): void {
       }
     }
 
-    const d = new Date(raw);
+    const d = new Date(cleanShippedOn);
     if (!isNaN(d.getTime())) {
       d.setDate(d.getDate() + 3);
       data['Follow-up Due'] = d.toISOString().slice(0, 10);
@@ -430,7 +622,16 @@ export async function loadAll(_overrideConfig?: any): Promise<AllDataResult> {
 
         headers.forEach((header, colIdx) => {
           if (!header) return;
-          const val = row[colIdx] !== undefined ? String(row[colIdx]).trim() : '';
+          let val = row[colIdx] !== undefined && row[colIdx] !== null ? String(row[colIdx]).trim() : '';
+
+          if (val) {
+            if (isDateTimeColumn(header)) {
+              val = formatDateTimeValue(val);
+            } else if (isDateColumn(header)) {
+              val = formatDateValue(val);
+            }
+          }
+
           record[header] = val;
           if (val) hasContent = true;
 
@@ -536,8 +737,34 @@ export async function createRecord<T extends BaseRecord = BaseRecord>(
     headers = DEFAULT_COLUMNS[table] || Object.keys(data);
   }
 
+  // Normalize date and datetime values in data
+  headers.forEach((col) => {
+    if (data[col] !== undefined && data[col] !== null) {
+      const rawVal = String(data[col]).trim();
+      if (rawVal) {
+        if (isDateTimeColumn(col)) {
+          data[col] = formatDateTimeValue(rawVal);
+        } else if (isDateColumn(col)) {
+          data[col] = formatDateValue(rawVal);
+        }
+      }
+    }
+  });
+
   // Construct row values matching header columns
-  const rowValues = headers.map((col) => (data[col] !== undefined ? String(data[col]) : ''));
+  const rowValues = headers.map((col) => {
+    const val = data[col];
+    if (val === undefined || val === null) return '';
+    const rawVal = String(val).trim();
+    if (!rawVal) return '';
+    if (isDateTimeColumn(col)) {
+      return formatDateTimeValue(rawVal);
+    }
+    if (isDateColumn(col)) {
+      return formatDateValue(rawVal);
+    }
+    return String(val);
+  });
 
   // Append row
   const appendUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(
@@ -613,7 +840,20 @@ export async function updateRecord<T extends BaseRecord = BaseRecord>(
   // Concurrency check: Re-read that row first and check its ID still matches
   const idField = TABLE_ID_FIELDS[table];
   const rowRes = await fetchSheetRange(`'${table}'!A${record._row}:Z${record._row}`, token);
-  const currentRowValues = (rowRes.values?.[0] || []).map((v) => (v !== undefined ? String(v) : ''));
+  const rawRowValues = rowRes.values?.[0] || [];
+  const currentRowValues = headers.map((col, idx) => {
+    const v = rawRowValues[idx];
+    if (v === undefined || v === null) return '';
+    let str = String(v).trim();
+    if (str) {
+      if (isDateTimeColumn(col)) {
+        str = formatDateTimeValue(str);
+      } else if (isDateColumn(col)) {
+        str = formatDateValue(str);
+      }
+    }
+    return str;
+  });
 
   if (idField && record[idField]) {
     const idColIdx = headers.indexOf(idField);
@@ -626,12 +866,38 @@ export async function updateRecord<T extends BaseRecord = BaseRecord>(
     }
   }
 
+  // Normalize date and datetime values in changes
+  Object.keys(changes).forEach((col) => {
+    if (changes[col] !== undefined && changes[col] !== null) {
+      const rawVal = String(changes[col]).trim();
+      if (rawVal) {
+        if (isDateTimeColumn(col)) {
+          changes[col] = formatDateTimeValue(rawVal);
+        } else if (isDateColumn(col)) {
+          changes[col] = formatDateValue(rawVal);
+        }
+      }
+    }
+  });
+
   // Construct new row values
   const newRowValues: string[] = headers.map((col, idx) => {
+    let valToSend = '';
     if (changes[col] !== undefined) {
-      return String(changes[col]);
+      valToSend = String(changes[col]).trim();
+    } else {
+      valToSend = currentRowValues[idx] !== undefined ? currentRowValues[idx] : '';
     }
-    return currentRowValues[idx] !== undefined ? currentRowValues[idx] : '';
+
+    if (valToSend) {
+      if (isDateTimeColumn(col)) {
+        return formatDateTimeValue(valToSend);
+      }
+      if (isDateColumn(col)) {
+        return formatDateValue(valToSend);
+      }
+    }
+    return valToSend;
   });
 
   const lastColLetter = String.fromCharCode(65 + Math.min(headers.length - 1, 25));
