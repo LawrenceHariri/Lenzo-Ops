@@ -164,6 +164,16 @@ export interface ProjectRecord extends BaseRecord {
   Notes?: string;
 }
 
+export interface ReminderRecord extends BaseRecord {
+  ReminderID?: string;
+  Task: string;
+  Owner?: string;
+  Due?: string;
+  Status: string; // e.g. "Scheduled"
+  Notes?: string;
+  [key: string]: any;
+}
+
 export type TableName =
   | "Samples"
   | "Leads"
@@ -176,7 +186,8 @@ export type TableName =
   | "Save State"
   | "Projects"
   | "Coach Config"
-  | "Coach Notes";
+  | "Coach Notes"
+  | "Reminders";
 
 export const TABLE_NAMES: TableName[] = [
   "Samples",
@@ -191,6 +202,7 @@ export const TABLE_NAMES: TableName[] = [
   "Projects",
   "Coach Config",
   "Coach Notes",
+  "Reminders",
 ];
 
 export interface TablesData {
@@ -206,6 +218,7 @@ export interface TablesData {
   Projects: ProjectRecord[];
   "Coach Config": CoachConfigRecord[];
   "Coach Notes": CoachNoteRecord[];
+  Reminders?: ReminderRecord[];
 }
 
 export interface DropdownLists {
@@ -263,6 +276,23 @@ export const TABLE_ID_FIELDS: Record<TableName, string | null> = {
   Support: "TicketID",
   "Save State": null,
   Projects: "ProjectID",
-  "Coach Config": "Key",
+  "Coach Config": null,
   "Coach Notes": "NoteID",
+  Reminders: "ReminderID",
+};
+
+export const TABLE_PREFIXES: Record<TableName, string | null> = {
+  Samples: "S-",
+  Leads: "L-",
+  Tasks: "T-",
+  Agents: "A-",
+  Trainings: "TR-",
+  Partners: "P-",
+  "Partner Issues": "PI-",
+  Support: "C-",
+  Projects: "P-",
+  "Coach Notes": "N-",
+  Reminders: "R-",
+  "Save State": null,
+  "Coach Config": null,
 };

@@ -13,39 +13,25 @@ import React, {
 } from 'react';
 import { User } from 'firebase/auth';
 import {
-  clearConnectionConfig,
   clearIdToken,
-  clearSheetConfig,
   createRecord as apiCreateRecord,
-  getConnectionConfig,
-  getConnectionMode,
   getIdToken,
-  getSheetConfig,
-  loadAll,
-  saveConnectionConfig,
-  saveSheetConfig,
-  setConnectionMode,
+  loadAll as apiLoadAll,
   setIdToken,
-  STORAGE_KEY_CLIENT_ID,
+  SPREADSHEET_ID,
   STORAGE_KEY_PIN_HASH,
+  testConnection as apiTestConnection,
   updateRecord as apiUpdateRecord,
-  ConnectionMode,
 } from './api';
 import {
+  AUTHORIZED_EMAIL,
   getAccessToken,
   googleSignIn,
   initAuth,
+  isAuthorizedEmail,
   logout,
   setCachedAccessToken,
 } from './firebase';
-import {
-  appendRowToSheet,
-  createLenzoSpreadsheet,
-  DriveSpreadsheetItem,
-  listDriveSpreadsheets,
-  readAllTablesFromSheet,
-  updateRowInSheet,
-} from './services/googleSheets';
 import {
   AllDataResult,
   BaseRecord,
@@ -75,12 +61,19 @@ const emptyTables: TablesData = {
   Projects: [],
   'Coach Config': [],
   'Coach Notes': [],
+  Reminders: [],
 };
 
+export interface ConnectionTestResult {
+  ok: boolean;
+  tabsCount?: number;
+  tabs?: string[];
+  error?: string;
+}
+
 interface OpsHubContextType {
-  mode: ConnectionMode;
-  setMode: (mode: ConnectionMode) => void;
-  sheetConfig: { sheetId: string; sheetName: string } | null;
+  mode: 'sheets';
+  sheetConfig: { sheetId: string; sheetName: string };
   tables: TablesData;
   lists: DropdownLists;
   serverDate: string;
@@ -88,10 +81,7 @@ interface OpsHubContextType {
   isRefreshing: boolean;
   error: string | null;
   lastSynced: Date | null;
-  config: { url: string; token: string; clientId: string } | null;
   isConfigured: boolean;
-  clientId: string;
-  idToken: string;
   firebaseUser: User | null;
   userEmail: string | null;
   userName: string | null;
@@ -99,22 +89,15 @@ interface OpsHubContextType {
   hasPin: boolean;
   isPinLocked: boolean;
   needsGoogleSignIn: boolean;
+  isUnauthorized: boolean;
+  unauthorizedEmail: string | null;
   toasts: ToastItem[];
   showToast: (message: string, type?: 'error' | 'success' | 'info') => void;
   removeToast: (id: string) => void;
-  saveConfig: (url: string, token: string, clientId?: string) => Promise<boolean>;
-  clearConfig: () => void;
-  connectGoogleSheet: (sheetId: string, sheetName?: string) => Promise<boolean>;
-  createNewGoogleSheet: (title?: string) => Promise<{ spreadsheetId: string; spreadsheetUrl: string }>;
-  loadDriveSpreadsheetsList: () => Promise<DriveSpreadsheetItem[]>;
   signInWithGoogleAuth: () => Promise<void>;
   signOutGoogle: () => Promise<void>;
   refresh: () => Promise<void>;
-  testConnection: (
-    testUrl?: string,
-    testToken?: string,
-    testIdToken?: string
-  ) => Promise<{ ok: boolean; error?: string }>;
+  testConnection: () => Promise<ConnectionTestResult>;
   createRecord: <T extends BaseRecord = BaseRecord>(
     table: TableName,
     data: Record<string, any>
@@ -124,26 +107,19 @@ interface OpsHubContextType {
     record: T,
     changes: Record<string, any>
   ) => Promise<T>;
-  setGoogleCredential: (credential: string) => void;
   setPin: (pin: string) => Promise<void>;
   removePin: () => void;
   verifyAndUnlockPin: (
     pin: string
   ) => Promise<{ success: boolean; attemptsRemaining?: number }>;
   lockWithPin: () => void;
+  // Compatibility fallbacks
+  setGoogleCredential: (credential: string) => void;
 }
 
 const OpsHubContext = createContext<OpsHubContextType | undefined>(undefined);
 
 export function OpsHubProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setModeState] = useState<ConnectionMode>(() => getConnectionMode());
-  const [sheetConfig, setSheetConfig] = useState<{ sheetId: string; sheetName: string } | null>(
-    () => getSheetConfig()
-  );
-  const [config, setConfig] = useState<{ url: string; token: string; clientId: string } | null>(
-    () => getConnectionConfig()
-  );
-
   const [tables, setTables] = useState<TablesData>(emptyTables);
   const [lists, setLists] = useState<DropdownLists>({});
   const [serverDate, setServerDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
@@ -153,13 +129,14 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
-  // Firebase Auth state
+  // Auth state
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userName, setUserName] = useState<string | null>(null);
   const [userPhoto, setUserPhoto] = useState<string | null>(null);
-  const [idTokenState, setIdTokenState] = useState<string>(() => getIdToken());
   const [needsGoogleSignIn, setNeedsGoogleSignIn] = useState(false);
+  const [isUnauthorized, setIsUnauthorized] = useState(false);
+  const [unauthorizedEmail, setUnauthorizedEmail] = useState<string | null>(null);
 
   // PIN Lock state
   const [hasPin, setHasPin] = useState<boolean>(() => {
@@ -172,15 +149,12 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
   });
   const [pinAttempts, setPinAttempts] = useState<number>(0);
 
-  const clientId = config?.clientId || '';
   const isFetchingRef = useRef(false);
   const lastSyncTimeRef = useRef<number>(0);
   const backgroundTimeRef = useRef<number | null>(null);
 
-  const isConfigured =
-    mode === 'sheets'
-      ? Boolean(sheetConfig?.sheetId)
-      : Boolean(config?.url && config?.token);
+  // Configured if signed in with the authorized account
+  const isConfigured = Boolean(firebaseUser && isAuthorizedEmail(userEmail));
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -197,61 +171,6 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     [removeToast]
   );
 
-  const setMode = useCallback((newMode: ConnectionMode) => {
-    setModeState(newMode);
-    setConnectionMode(newMode);
-  }, []);
-
-  // Firebase Auth Listener
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      (user, token) => {
-        setFirebaseUser(user);
-        setUserEmail(user.email || null);
-        setUserName(user.displayName || null);
-        setUserPhoto(user.photoURL || null);
-        if (token) {
-          setCachedAccessToken(token);
-          setIdToken(token);
-          setIdTokenState(token);
-        }
-        setNeedsGoogleSignIn(false);
-      },
-      () => {
-        setFirebaseUser(null);
-        setUserEmail(null);
-        setUserName(null);
-        setUserPhoto(null);
-        setCachedAccessToken(null);
-        clearIdToken();
-        setIdTokenState('');
-      }
-    );
-
-    return () => unsubscribe();
-  }, []);
-
-  // Sign in with Google (Firebase Auth)
-  const signInWithGoogleAuth = useCallback(async () => {
-    try {
-      const result = await googleSignIn();
-      setFirebaseUser(result.user);
-      setUserEmail(result.user.email || null);
-      setUserName(result.user.displayName || null);
-      setUserPhoto(result.user.photoURL || null);
-      setIdToken(result.accessToken);
-      setIdTokenState(result.accessToken);
-      setNeedsGoogleSignIn(false);
-      showToast(`Signed in as ${result.user.email}`, 'success');
-      // Trigger sync
-      fetchData(true);
-    } catch (err: any) {
-      const msg = err?.message || 'Failed to sign in with Google';
-      showToast(msg, 'error');
-      throw err;
-    }
-  }, [showToast]);
-
   // Sign out Google
   const signOutGoogle = useCallback(async () => {
     await logout();
@@ -260,35 +179,273 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     setUserName(null);
     setUserPhoto(null);
     clearIdToken();
-    setIdTokenState('');
+    setTables(emptyTables);
+    setLists({});
+    setLastSynced(null);
+    setIsUnauthorized(false);
+    setUnauthorizedEmail(null);
     showToast('Signed out of Google account', 'info');
   }, [showToast]);
 
-  // Backwards compatibility for setGoogleCredential
-  const setGoogleCredential = useCallback(
-    (credential: string) => {
-      setIdToken(credential);
-      setIdTokenState(credential);
-      setNeedsGoogleSignIn(false);
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        if (!isAuthorizedEmail(user.email)) {
+          setIsUnauthorized(true);
+          setUnauthorizedEmail(user.email || 'Unknown');
+          signOutGoogle();
+          return;
+        }
+
+        setIsUnauthorized(false);
+        setUnauthorizedEmail(null);
+        setFirebaseUser(user);
+        setUserEmail(user.email || null);
+        setUserName(user.displayName || null);
+        setUserPhoto(user.photoURL || null);
+        if (token) {
+          setCachedAccessToken(token);
+          setIdToken(token);
+        }
+        setNeedsGoogleSignIn(false);
+      },
+      (errorMsg) => {
+        if (errorMsg === 'Not authorised') {
+          setIsUnauthorized(true);
+          showToast('Not authorised. Access restricted to hariri@lenzohariri.com', 'error');
+        }
+        setFirebaseUser(null);
+        setUserEmail(null);
+        setUserName(null);
+        setUserPhoto(null);
+        setCachedAccessToken(null);
+        clearIdToken();
+      }
+    );
+
+    return () => unsubscribe();
+  }, [signOutGoogle, showToast]);
+
+  // Main data loader
+  const fetchData = useCallback(
+    async (isBackground = false) => {
+      const token = await getAccessToken();
+      if (!token) {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        setNeedsGoogleSignIn(true);
+        return;
+      }
+
+      if (isFetchingRef.current) return;
+      isFetchingRef.current = true;
+
+      if (!isBackground) {
+        setIsLoading(true);
+      } else {
+        setIsRefreshing(true);
+      }
+      setError(null);
+
       try {
-        const base64Url = credential.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(
-          atob(base64)
-            .split('')
-            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-            .join('')
-        );
-        const parsed = JSON.parse(jsonPayload);
-        if (parsed?.email) setUserEmail(parsed.email);
-        if (parsed?.name) setUserName(parsed.name);
-      } catch {}
-      fetchData(true);
+        const result: AllDataResult = await apiLoadAll();
+        setTables(result.tables);
+        setLists(result.lists || {});
+        if (result.serverDate) setServerDate(result.serverDate);
+
+        const now = new Date();
+        setLastSynced(now);
+        lastSyncTimeRef.current = now.getTime();
+      } catch (err: any) {
+        const errMsg = err?.message || 'Failed to sync with Google Sheet';
+        setError(errMsg);
+        if (/401|auth|sign\s*in|credential/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
+        }
+        showToast(errMsg, 'error');
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+        isFetchingRef.current = false;
+      }
     },
-    []
+    [showToast]
   );
 
-  // Set PIN
+  const refresh = useCallback(async () => {
+    await fetchData(true);
+  }, [fetchData]);
+
+  // Sign in with Google (Firebase Auth)
+  const signInWithGoogleAuth = useCallback(async () => {
+    try {
+      const result = await googleSignIn();
+
+      if (!isAuthorizedEmail(result.user.email)) {
+        setIsUnauthorized(true);
+        setUnauthorizedEmail(result.user.email || 'Unknown');
+        await signOutGoogle();
+        showToast('Not authorised. Access is restricted to hariri@lenzohariri.com', 'error');
+        return;
+      }
+
+      setIsUnauthorized(false);
+      setUnauthorizedEmail(null);
+      setFirebaseUser(result.user);
+      setUserEmail(result.user.email || null);
+      setUserName(result.user.displayName || null);
+      setUserPhoto(result.user.photoURL || null);
+      setNeedsGoogleSignIn(false);
+      showToast(`Signed in as ${result.user.email}`, 'success');
+
+      // Sync sheets data
+      fetchData(false);
+    } catch (err: any) {
+      if (err?.message === 'Not authorised') {
+        setIsUnauthorized(true);
+        showToast('Not authorised. Access is restricted to hariri@lenzohariri.com', 'error');
+        return;
+      }
+      const msg = err?.message || 'Failed to sign in with Google';
+      showToast(msg, 'error');
+      throw err;
+    }
+  }, [fetchData, signOutGoogle, showToast]);
+
+  // Initial load when user is verified
+  useEffect(() => {
+    if (firebaseUser && isAuthorizedEmail(firebaseUser.email)) {
+      fetchData(false);
+    } else {
+      setIsLoading(false);
+    }
+  }, [firebaseUser, fetchData]);
+
+  // Periodic refresh every 5 minutes
+  useEffect(() => {
+    if (!firebaseUser || !isAuthorizedEmail(firebaseUser.email)) return;
+    const intervalId = setInterval(() => {
+      fetchData(true);
+    }, 5 * 60 * 1000);
+    return () => clearInterval(intervalId);
+  }, [firebaseUser, fetchData]);
+
+  // Focus & visibility refresh
+  useEffect(() => {
+    if (!firebaseUser || !isAuthorizedEmail(firebaseUser.email)) return;
+    const handleFocusOrVisible = () => {
+      const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
+      if (document.visibilityState === 'visible' && timeSinceLastSync > 30 * 1000) {
+        fetchData(true);
+      }
+    };
+
+    window.addEventListener('focus', handleFocusOrVisible);
+    document.addEventListener('visibilitychange', handleFocusOrVisible);
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisible);
+      document.removeEventListener('visibilitychange', handleFocusOrVisible);
+    };
+  }, [firebaseUser, fetchData]);
+
+  // Test connection
+  const testConnection = useCallback(async (): Promise<ConnectionTestResult> => {
+    try {
+      const res = await apiTestConnection();
+      return res;
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: err?.message || 'Connection test failed',
+      };
+    }
+  }, []);
+
+  // Create record
+  const createRecord = useCallback(
+    async <T extends BaseRecord = BaseRecord>(
+      table: TableName,
+      data: Record<string, any>
+    ): Promise<T> => {
+      const prevTableData = (tables[table] || []) as any[];
+
+      try {
+        const newRecord = await apiCreateRecord<T>(table, data);
+        setTables((prev) => ({
+          ...prev,
+          [table]: [...(prev[table] as any[]), newRecord],
+        }));
+        return newRecord;
+      } catch (err: any) {
+        const errMsg = err?.message || `Failed to create record in ${table}`;
+        if (/sign\s*in|401|auth/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
+        }
+        showToast(errMsg, 'error');
+        setTables((prev) => ({
+          ...prev,
+          [table]: prevTableData,
+        }));
+        throw err;
+      }
+    },
+    [tables, showToast]
+  );
+
+  // Update record
+  const updateRecord = useCallback(
+    async <T extends BaseRecord = BaseRecord>(
+      table: TableName,
+      record: T,
+      changes: Record<string, any>
+    ): Promise<T> => {
+      const prevTableData = (tables[table] || []) as any[];
+
+      // Optimistic update
+      setTables((prev) => ({
+        ...prev,
+        [table]: (prev[table] as any[]).map((r) =>
+          r._row === record._row ? { ...r, ...changes } : r
+        ),
+      }));
+
+      try {
+        const updatedRecord = await apiUpdateRecord<T>(table, record, changes);
+        setTables((prev) => ({
+          ...prev,
+          [table]: (prev[table] as any[]).map((r) =>
+            r._row === record._row ? updatedRecord : r
+          ),
+        }));
+        return updatedRecord;
+      } catch (err: any) {
+        const errMsg = err?.message || `Failed to update record in ${table}`;
+
+        // Concurrency check requirement: "if not, refresh and show 'Sheet changed — please retry'"
+        if (errMsg.includes('Sheet changed — please retry')) {
+          showToast('Sheet changed — please retry', 'error');
+          // Re-fetch sheet to sync local state
+          fetchData(true);
+        } else {
+          if (/sign\s*in|401|auth/i.test(errMsg)) {
+            setNeedsGoogleSignIn(true);
+          }
+          showToast(errMsg, 'error');
+        }
+
+        // Revert optimistic update
+        setTables((prev) => ({
+          ...prev,
+          [table]: prevTableData,
+        }));
+        throw err;
+      }
+    },
+    [tables, fetchData, showToast]
+  );
+
+  // PIN management
   const setPin = useCallback(async (pin: string) => {
     const hash = await hashPin(pin);
     localStorage.setItem(STORAGE_KEY_PIN_HASH, hash);
@@ -297,7 +454,6 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     showToast('4-digit PIN lock configured', 'success');
   }, [showToast]);
 
-  // Remove PIN
   const removePin = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY_PIN_HASH);
     setHasPin(false);
@@ -306,14 +462,12 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     showToast('PIN lock removed', 'info');
   }, [showToast]);
 
-  // Lock app manually
   const lockWithPin = useCallback(() => {
     if (hasPin) {
       setIsPinLocked(true);
     }
   }, [hasPin]);
 
-  // Verify and unlock PIN
   const verifyAndUnlockPin = useCallback(
     async (pin: string): Promise<{ success: boolean; attemptsRemaining?: number }> => {
       const storedHash = localStorage.getItem(STORAGE_KEY_PIN_HASH);
@@ -334,7 +488,6 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
 
         if (nextAttempts >= 5) {
           clearIdToken();
-          setIdTokenState('');
           setNeedsGoogleSignIn(true);
         }
 
@@ -344,7 +497,7 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     [pinAttempts]
   );
 
-  // 10 minutes background lock watcher
+  // 10 minutes background watcher
   useEffect(() => {
     const handleVisibility = () => {
       const pinExists = Boolean(localStorage.getItem(STORAGE_KEY_PIN_HASH));
@@ -367,392 +520,19 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, []);
 
-  // Main data fetcher
-  const fetchData = useCallback(
-    async (isBackground = false) => {
-      const currentMode = getConnectionMode();
-
-      if (currentMode === 'sheets') {
-        const sheet = getSheetConfig();
-        if (!sheet?.sheetId) {
-          setIsLoading(false);
-          setIsRefreshing(false);
-          return;
-        }
-
-        const token = await getAccessToken();
-        if (!token) {
-          setIsLoading(false);
-          setIsRefreshing(false);
-          setNeedsGoogleSignIn(true);
-          return;
-        }
-
-        if (isFetchingRef.current) return;
-        isFetchingRef.current = true;
-
-        if (!isBackground) {
-          setIsLoading(true);
-        } else {
-          setIsRefreshing(true);
-        }
-        setError(null);
-
-        try {
-          const result = await readAllTablesFromSheet(sheet.sheetId, token);
-          setTables(result.tables);
-          setLists(result.lists || {});
-          if (result.serverDate) setServerDate(result.serverDate);
-
-          const now = new Date();
-          setLastSynced(now);
-          lastSyncTimeRef.current = now.getTime();
-        } catch (err: any) {
-          const errMsg = err?.message || 'Failed to sync with Google Sheets';
-          setError(errMsg);
-          if (/401|auth|sign\s*in|credential/i.test(errMsg)) {
-            setNeedsGoogleSignIn(true);
-          }
-          showToast(errMsg, 'error');
-        } finally {
-          setIsLoading(false);
-          setIsRefreshing(false);
-          isFetchingRef.current = false;
-        }
-      } else {
-        // Apps Script mode
-        const currentConfig = getConnectionConfig();
-        if (!currentConfig?.url || !currentConfig?.token) {
-          setIsLoading(false);
-          setIsRefreshing(false);
-          return;
-        }
-
-        if (isFetchingRef.current) return;
-        isFetchingRef.current = true;
-
-        if (!isBackground) {
-          setIsLoading(true);
-        } else {
-          setIsRefreshing(true);
-        }
-        setError(null);
-
-        try {
-          const result: AllDataResult = await loadAll(currentConfig);
-          const populatedTables: TablesData = {
-            Samples: result.tables?.Samples || [],
-            Leads: result.tables?.Leads || [],
-            Tasks: result.tables?.Tasks || [],
-            Agents: result.tables?.Agents || [],
-            Trainings: result.tables?.Trainings || [],
-            Partners: result.tables?.Partners || [],
-            'Partner Issues': result.tables?.['Partner Issues'] || [],
-            Support: result.tables?.Support || [],
-            'Save State': result.tables?.['Save State'] || [],
-            Projects: result.tables?.Projects || [],
-            'Coach Config': result.tables?.['Coach Config'] || [],
-            'Coach Notes': result.tables?.['Coach Notes'] || [],
-          };
-
-          setTables(populatedTables);
-          setLists(result.lists || {});
-          if (result.serverDate) setServerDate(result.serverDate);
-          if (result.user?.email) setUserEmail(result.user.email);
-
-          const now = new Date();
-          setLastSynced(now);
-          lastSyncTimeRef.current = now.getTime();
-        } catch (err: any) {
-          const errMsg = err?.message || 'Failed to sync with Google Sheet';
-          setError(errMsg);
-          if (/sign\s*in/i.test(errMsg)) {
-            setNeedsGoogleSignIn(true);
-          }
-          showToast(errMsg, 'error');
-        } finally {
-          setIsLoading(false);
-          setIsRefreshing(false);
-          isFetchingRef.current = false;
-        }
-      }
+  const setGoogleCredential = useCallback(
+    (_cred: string) => {
+      // Compatibility stub
     },
-    [showToast]
+    []
   );
 
-  const refresh = useCallback(async () => {
-    await fetchData(true);
-  }, [fetchData]);
-
-  // Initial load
-  useEffect(() => {
-    if (isConfigured) {
-      fetchData(false);
-    } else {
-      setIsLoading(false);
-    }
-  }, [isConfigured, fetchData]);
-
-  // Periodic refresh every 5 minutes
-  useEffect(() => {
-    if (!isConfigured) return;
-    const intervalId = setInterval(() => {
-      fetchData(true);
-    }, 5 * 60 * 1000);
-    return () => clearInterval(intervalId);
-  }, [isConfigured, fetchData]);
-
-  // Focus & visibility refresh
-  useEffect(() => {
-    if (!isConfigured) return;
-    const handleFocusOrVisible = () => {
-      const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
-      if (document.visibilityState === 'visible' && timeSinceLastSync > 30 * 1000) {
-        fetchData(true);
-      }
-    };
-
-    window.addEventListener('focus', handleFocusOrVisible);
-    document.addEventListener('visibilitychange', handleFocusOrVisible);
-    return () => {
-      window.removeEventListener('focus', handleFocusOrVisible);
-      document.removeEventListener('visibilitychange', handleFocusOrVisible);
-    };
-  }, [isConfigured, fetchData]);
-
-  // Connect Google Sheet
-  const connectGoogleSheet = useCallback(
-    async (newSheetId: string, sheetName = 'Lenzo Ops Master'): Promise<boolean> => {
-      saveSheetConfig(newSheetId, sheetName);
-      setSheetConfig({ sheetId: newSheetId, sheetName });
-      setMode('sheets');
-      setError(null);
-      await fetchData(false);
-      showToast(`Connected to Google Sheet "${sheetName}"`, 'success');
-      return true;
+  const value: OpsHubContextType = {
+    mode: 'sheets',
+    sheetConfig: {
+      sheetId: SPREADSHEET_ID,
+      sheetName: 'Lenzo Ops Hub',
     },
-    [setMode, fetchData, showToast]
-  );
-
-  // Create New Google Sheet in Drive
-  const createNewGoogleSheet = useCallback(
-    async (title = 'Lenzo-Ops Master Data'): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> => {
-      const token = await getAccessToken();
-      if (!token) {
-        setNeedsGoogleSignIn(true);
-        throw new Error('Please sign in with Google to create a spreadsheet in your Google Drive.');
-      }
-
-      showToast('Creating Lenzo Ops Google Sheet...', 'info');
-      const result = await createLenzoSpreadsheet(token, title);
-      saveSheetConfig(result.spreadsheetId, title);
-      setSheetConfig({ sheetId: result.spreadsheetId, sheetName: title });
-      setMode('sheets');
-      await fetchData(false);
-      showToast('Google Sheet created and synced successfully!', 'success');
-      return result;
-    },
-    [setMode, fetchData, showToast]
-  );
-
-  // List user spreadsheets from Drive
-  const loadDriveSpreadsheetsList = useCallback(async (): Promise<DriveSpreadsheetItem[]> => {
-    const token = await getAccessToken();
-    if (!token) {
-      setNeedsGoogleSignIn(true);
-      throw new Error('Please sign in with Google to list spreadsheets.');
-    }
-    return await listDriveSpreadsheets(token);
-  }, []);
-
-  // Save Apps Script config
-  const saveConfig = useCallback(
-    async (newUrl: string, newToken: string, newClientId?: string): Promise<boolean> => {
-      saveConnectionConfig(newUrl, newToken, newClientId);
-      const conf = getConnectionConfig();
-      setConfig(conf);
-      setMode('appscript');
-      setError(null);
-      await fetchData(false);
-      showToast('Settings saved successfully', 'success');
-      return true;
-    },
-    [setMode, fetchData, showToast]
-  );
-
-  // Clear config
-  const clearConfig = useCallback(() => {
-    clearConnectionConfig();
-    clearSheetConfig();
-    setConfig(null);
-    setSheetConfig(null);
-    setTables(emptyTables);
-    setLists({});
-    setServerDate(new Date().toISOString().slice(0, 10));
-    setLastSynced(null);
-    setError(null);
-    showToast('Configuration cleared', 'info');
-  }, [showToast]);
-
-  // Test connection
-  const testConnection = useCallback(
-    async (
-      testUrl?: string,
-      testToken?: string,
-      testIdToken?: string
-    ): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        if (mode === 'sheets') {
-          const sheet = getSheetConfig();
-          const token = await getAccessToken();
-          if (!sheet?.sheetId || !token) {
-            return { ok: false, error: 'Sign in with Google and select a Sheet' };
-          }
-          await readAllTablesFromSheet(sheet.sheetId, token);
-          return { ok: true };
-        } else {
-          const conf = getConnectionConfig();
-          const urlToUse = testUrl || conf?.url;
-          const tokenToUse = testToken || conf?.token;
-          if (!urlToUse || !tokenToUse) {
-            return { ok: false, error: 'URL and Token are required' };
-          }
-          await loadAll({ url: urlToUse, token: tokenToUse, idToken: testIdToken });
-          return { ok: true };
-        }
-      } catch (err: any) {
-        const errMsg = err?.message || 'Connection test failed';
-        if (/sign\s*in/i.test(errMsg)) {
-          setNeedsGoogleSignIn(true);
-        }
-        return { ok: false, error: errMsg };
-      }
-    },
-    [mode]
-  );
-
-  // Create record
-  const createRecord = useCallback(
-    async <T extends BaseRecord = BaseRecord>(
-      table: TableName,
-      data: Record<string, any>
-    ): Promise<T> => {
-      const prevTableData = tables[table] || [];
-
-      try {
-        if (mode === 'sheets') {
-          const sheet = getSheetConfig();
-          const token = await getAccessToken();
-          if (!sheet?.sheetId || !token) {
-            throw new Error('Google Sheet connection or authorization is missing.');
-          }
-
-          const newRecord = (await appendRowToSheet(
-            sheet.sheetId,
-            table,
-            data,
-            token
-          )) as T;
-
-          setTables((prev) => ({
-            ...prev,
-            [table]: [...(prev[table] as any[]), newRecord],
-          }));
-          return newRecord;
-        } else {
-          const newRecord = await apiCreateRecord<T>(table, data);
-          setTables((prev) => ({
-            ...prev,
-            [table]: [...(prev[table] as any[]), newRecord],
-          }));
-          return newRecord;
-        }
-      } catch (err: any) {
-        const errMsg = err?.message || `Failed to create record in ${table}`;
-        if (/sign\s*in|401|auth/i.test(errMsg)) {
-          setNeedsGoogleSignIn(true);
-        }
-        showToast(errMsg, 'error');
-        setTables((prev) => ({
-          ...prev,
-          [table]: prevTableData,
-        }));
-        throw err;
-      }
-    },
-    [mode, tables, showToast]
-  );
-
-  // Update record
-  const updateRecord = useCallback(
-    async <T extends BaseRecord = BaseRecord>(
-      table: TableName,
-      record: T,
-      changes: Record<string, any>
-    ): Promise<T> => {
-      const prevTableData = tables[table] || [];
-
-      // Optimistic update
-      setTables((prev) => ({
-        ...prev,
-        [table]: (prev[table] as any[]).map((r) =>
-          r._row === record._row ? { ...r, ...changes } : r
-        ),
-      }));
-
-      try {
-        if (mode === 'sheets') {
-          const sheet = getSheetConfig();
-          const token = await getAccessToken();
-          if (!sheet?.sheetId || !token) {
-            throw new Error('Google Sheet connection or authorization is missing.');
-          }
-
-          const updated = (await updateRowInSheet(
-            sheet.sheetId,
-            table,
-            record._row,
-            changes,
-            token
-          )) as T;
-
-          setTables((prev) => ({
-            ...prev,
-            [table]: (prev[table] as any[]).map((r) =>
-              r._row === record._row ? updated : r
-            ),
-          }));
-          return updated;
-        } else {
-          const updatedRecord = await apiUpdateRecord<T>(table, record, changes);
-          setTables((prev) => ({
-            ...prev,
-            [table]: (prev[table] as any[]).map((r) =>
-              r._row === record._row ? updatedRecord : r
-            ),
-          }));
-          return updatedRecord;
-        }
-      } catch (err: any) {
-        const errMsg = err?.message || `Failed to update record in ${table}`;
-        if (/sign\s*in|401|auth/i.test(errMsg)) {
-          setNeedsGoogleSignIn(true);
-        }
-        showToast(errMsg, 'error');
-        setTables((prev) => ({
-          ...prev,
-          [table]: prevTableData,
-        }));
-        throw err;
-      }
-    },
-    [mode, tables, showToast]
-  );
-
-  const value = {
-    mode,
-    setMode,
-    sheetConfig,
     tables,
     lists,
     serverDate,
@@ -760,10 +540,7 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     isRefreshing,
     error,
     lastSynced,
-    config,
     isConfigured,
-    clientId,
-    idToken: idTokenState,
     firebaseUser,
     userEmail,
     userName,
@@ -771,25 +548,22 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     hasPin,
     isPinLocked,
     needsGoogleSignIn,
+    isUnauthorized,
+    unauthorizedEmail,
     toasts,
     showToast,
     removeToast,
-    saveConfig,
-    clearConfig,
-    connectGoogleSheet,
-    createNewGoogleSheet,
-    loadDriveSpreadsheetsList,
     signInWithGoogleAuth,
     signOutGoogle,
     refresh,
     testConnection,
     createRecord,
     updateRecord,
-    setGoogleCredential,
     setPin,
     removePin,
     verifyAndUnlockPin,
     lockWithPin,
+    setGoogleCredential,
   };
 
   return <OpsHubContext.Provider value={value}>{children}</OpsHubContext.Provider>;

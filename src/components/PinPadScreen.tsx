@@ -13,7 +13,7 @@ interface PinPadScreenProps {
 }
 
 export const PinPadScreen: React.FC<PinPadScreenProps> = ({ onSuccess }) => {
-  const { verifyAndUnlockPin, needsGoogleSignIn, userEmail, clientId } = useOpsHub();
+  const { verifyAndUnlockPin, needsGoogleSignIn, userEmail } = useOpsHub();
 
   const [digits, setDigits] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);

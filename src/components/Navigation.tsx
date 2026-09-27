@@ -75,12 +75,12 @@ export const Navigation: React.FC<NavigationProps> = ({
           </div>
 
           {/* Connected Sheet Status Pill */}
-          {mode === 'sheets' && sheetConfig?.sheetId && (
+          {sheetConfig?.sheetId && (
             <div className="mb-6 px-3 py-2 bg-emerald-50/70 border border-emerald-200/80 rounded-2xl flex items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 min-w-0">
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span className="truncate font-medium text-emerald-900 text-[11px]">
-                  {sheetConfig.sheetName || 'Google Sheet'}
+                  {sheetConfig.sheetName || 'Lenzo Ops Hub'}
                 </span>
               </div>
               <a

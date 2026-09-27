@@ -39,7 +39,6 @@ import { OpsHubProvider, useOpsHub } from './store';
 
 function MainApp() {
   const {
-    mode,
     sheetConfig,
     isConfigured,
     serverDate,
@@ -53,6 +52,8 @@ function MainApp() {
     hasPin,
     lockWithPin,
     needsGoogleSignIn,
+    isUnauthorized,
+    unauthorizedEmail,
     userEmail,
   } = useOpsHub();
 
@@ -87,6 +88,32 @@ function MainApp() {
     };
   }, [tables, currentDate]);
 
+  // If unauthorized account was used
+  if (isUnauthorized) {
+    return (
+      <div className="min-h-screen bg-[#F7F7F5] flex flex-col items-center justify-center p-4">
+        <ToastContainer />
+        <div className="w-full max-w-sm bg-white rounded-3xl p-8 border border-rose-200 shadow-xl text-center space-y-5 animate-in fade-in">
+          <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-xl font-bold text-stone-900">Not authorised</h2>
+            <p className="text-xs text-stone-500">
+              Only <strong className="text-stone-800">hariri@lenzohariri.com</strong> has access to this hub.
+              {unauthorizedEmail && (
+                <span className="block mt-1 font-mono text-rose-600 text-[11px] truncate">
+                  ({unauthorizedEmail})
+                </span>
+              )}
+            </p>
+          </div>
+          <GoogleSignInModal forceShow={true} />
+        </div>
+      </div>
+    );
+  }
+
   // If PIN lock is active, show clean PIN pad before any data
   if (isPinLocked) {
     return (
@@ -97,29 +124,19 @@ function MainApp() {
     );
   }
 
-  // If credentials are not configured, show initial setup screen
-  if (!isConfigured) {
-    return (
-      <div className="min-h-screen bg-[#F7F7F5] flex items-center justify-center p-4">
-        <ToastContainer />
-        <SettingsScreen isInitialSetup={true} />
-      </div>
-    );
-  }
-
-  // If Google authentication is required by API or lockout
-  if (needsGoogleSignIn) {
+  // If not signed in yet with Google
+  if (!isConfigured || needsGoogleSignIn) {
     return (
       <div className="min-h-screen bg-[#F7F7F5] flex flex-col items-center justify-center p-4">
         <ToastContainer />
         <div className="w-full max-w-sm bg-white rounded-3xl p-8 border border-stone-200 shadow-xl text-center space-y-5 animate-in fade-in">
-          <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
-            <Shield className="w-6 h-6" />
+          <div className="w-12 h-12 rounded-2xl bg-stone-900 text-white flex items-center justify-center mx-auto font-bold text-lg shadow-sm">
+            L
           </div>
           <div className="space-y-1">
-            <h2 className="text-xl font-bold text-stone-900">Sign in with Google</h2>
+            <h2 className="text-xl font-bold text-stone-900">Lenzo Ops Hub</h2>
             <p className="text-xs text-stone-500">
-              Your Google identity is required to authenticate requests to the Google Sheet.
+              Sign in with <strong className="text-stone-700">hariri@lenzohariri.com</strong> to access the Google Sheet.
             </p>
           </div>
           <GoogleSignInModal forceShow={true} />
@@ -185,10 +202,10 @@ function MainApp() {
 
           <div className="flex items-center gap-3">
             {/* Connected Google Sheet Pill */}
-            {mode === 'sheets' && sheetConfig?.sheetId && (
+            {sheetConfig?.sheetId && (
               <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-emerald-50 border border-emerald-200/80 text-xs text-emerald-800 shadow-2xs">
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="font-medium truncate max-w-[140px]">{sheetConfig.sheetName || 'Google Sheet'}</span>
+                <span className="font-medium truncate max-w-[140px]">{sheetConfig.sheetName || 'Lenzo Ops Hub'}</span>
                 <a
                   href={`https://docs.google.com/spreadsheets/d/${sheetConfig.sheetId}/edit`}
                   target="_blank"

@@ -14,6 +14,14 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../firebase-applet-config.json';
 
+// Dedicated single allowed account
+export const AUTHORIZED_EMAIL = 'hariri@lenzohariri.com';
+
+export function isAuthorizedEmail(email?: string | null): boolean {
+  if (!email) return false;
+  return email.toLowerCase().trim() === AUTHORIZED_EMAIL.toLowerCase().trim();
+}
+
 // Initialize Firebase App
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -40,19 +48,28 @@ let cachedUser: User | null = null;
  */
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string | null) => void,
-  onAuthFailure?: () => void
+  onAuthFailure?: (errorMsg?: string) => void
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
-    cachedUser = user;
     if (user) {
+      if (!isAuthorizedEmail(user.email)) {
+        await signOut(auth);
+        cachedAccessToken = null;
+        cachedUser = null;
+        if (onAuthFailure) onAuthFailure('Not authorised');
+        return;
+      }
+
+      cachedUser = user;
       if (cachedAccessToken) {
         if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
       } else if (!isSigningIn) {
-        // User is authenticated in Firebase, but we need fresh OAuth token for Workspace APIs
+        // User is authenticated in Firebase, but we need the OAuth token for Workspace APIs
         if (onAuthSuccess) onAuthSuccess(user, null);
       }
     } else {
       cachedAccessToken = null;
+      cachedUser = null;
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -65,16 +82,26 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, googleProvider);
+    const user = result.user;
+
+    // Hard Rule: Only allow hariri@lenzohariri.com
+    if (!isAuthorizedEmail(user.email)) {
+      await signOut(auth);
+      cachedAccessToken = null;
+      cachedUser = null;
+      throw new Error('Not authorised');
+    }
+
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
       throw new Error('Failed to get Google OAuth access token from Firebase Auth credential.');
     }
 
     cachedAccessToken = credential.accessToken;
-    cachedUser = result.user;
-    return { user: result.user, accessToken: cachedAccessToken };
+    cachedUser = user;
+    return { user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Firebase Google Sign In error:', error);
+    console.error('Google Sign In error:', error);
     throw error;
   } finally {
     isSigningIn = false;
@@ -103,7 +130,7 @@ export const getCurrentUser = (): User | null => {
 };
 
 /**
- * Sign out of Firebase Auth
+ * Sign out of Google / Firebase Auth
  */
 export const logout = async (): Promise<void> => {
   await signOut(auth);
