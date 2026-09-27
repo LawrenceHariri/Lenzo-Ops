@@ -13,10 +13,15 @@ import React, {
 } from 'react';
 import {
   clearConnectionConfig,
+  clearIdToken,
   createRecord as apiCreateRecord,
   getConnectionConfig,
+  getIdToken,
   loadAll,
   saveConnectionConfig,
+  setIdToken,
+  STORAGE_KEY_CLIENT_ID,
+  STORAGE_KEY_PIN_HASH,
   updateRecord as apiUpdateRecord,
 } from './api';
 import {
@@ -26,6 +31,7 @@ import {
   TableName,
   TablesData,
 } from './types';
+import { hashPin, verifyPin } from './utils/pin';
 
 export interface ToastItem {
   id: string;
@@ -44,6 +50,9 @@ const emptyTables: TablesData = {
   'Partner Issues': [],
   Support: [],
   'Save State': [],
+  Projects: [],
+  'Coach Config': [],
+  'Coach Notes': [],
 };
 
 interface OpsHubContextType {
@@ -54,17 +63,24 @@ interface OpsHubContextType {
   isRefreshing: boolean;
   error: string | null;
   lastSynced: Date | null;
-  config: { url: string; token: string } | null;
+  config: { url: string; token: string; clientId: string } | null;
   isConfigured: boolean;
+  clientId: string;
+  idToken: string;
+  userEmail: string | null;
+  hasPin: boolean;
+  isPinLocked: boolean;
+  needsGoogleSignIn: boolean;
   toasts: ToastItem[];
   showToast: (message: string, type?: 'error' | 'success' | 'info') => void;
   removeToast: (id: string) => void;
-  saveConfig: (url: string, token: string) => Promise<boolean>;
+  saveConfig: (url: string, token: string, clientId?: string) => Promise<boolean>;
   clearConfig: () => void;
   refresh: () => Promise<void>;
   testConnection: (
     testUrl?: string,
-    testToken?: string
+    testToken?: string,
+    testIdToken?: string
   ) => Promise<{ ok: boolean; error?: string }>;
   createRecord: <T extends BaseRecord = BaseRecord>(
     table: TableName,
@@ -75,12 +91,20 @@ interface OpsHubContextType {
     record: T,
     changes: Record<string, any>
   ) => Promise<T>;
+  setGoogleCredential: (credential: string) => void;
+  signOutGoogle: () => void;
+  setPin: (pin: string) => Promise<void>;
+  removePin: () => void;
+  verifyAndUnlockPin: (
+    pin: string
+  ) => Promise<{ success: boolean; attemptsRemaining?: number }>;
+  lockWithPin: () => void;
 }
 
 const OpsHubContext = createContext<OpsHubContextType | undefined>(undefined);
 
 export function OpsHubProvider({ children }: { children: React.ReactNode }) {
-  const [config, setConfig] = useState<{ url: string; token: string } | null>(
+  const [config, setConfig] = useState<{ url: string; token: string; clientId: string } | null>(
     () => getConnectionConfig()
   );
   const [tables, setTables] = useState<TablesData>(emptyTables);
@@ -92,9 +116,27 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
   const [lastSynced, setLastSynced] = useState<Date | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
+  // Google Sign-in state (in-memory token only)
+  const [idTokenState, setIdTokenState] = useState<string>(() => getIdToken());
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [needsGoogleSignIn, setNeedsGoogleSignIn] = useState(false);
+
+  // PIN Lock state
+  const [hasPin, setHasPin] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(localStorage.getItem(STORAGE_KEY_PIN_HASH));
+  });
+  const [isPinLocked, setIsPinLocked] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(localStorage.getItem(STORAGE_KEY_PIN_HASH));
+  });
+  const [pinAttempts, setPinAttempts] = useState<number>(0);
+
+  const clientId = config?.clientId || '';
   const isConfigured = Boolean(config?.url && config?.token);
   const isFetchingRef = useRef(false);
   const lastSyncTimeRef = useRef<number>(0);
+  const backgroundTimeRef = useRef<number | null>(null);
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -110,6 +152,134 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     },
     [removeToast]
   );
+
+  // Set Google ID Token credential
+  const setGoogleCredential = useCallback(
+    (credential: string) => {
+      setIdToken(credential);
+      setIdTokenState(credential);
+      setNeedsGoogleSignIn(false);
+
+      // Attempt to decode email from JWT payload
+      try {
+        const base64Url = credential.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(
+          atob(base64)
+            .split('')
+            .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+            .join('')
+        );
+        const parsed = JSON.parse(jsonPayload);
+        if (parsed?.email) {
+          setUserEmail(parsed.email);
+        }
+      } catch {
+        // Ignored
+      }
+
+      showToast('Signed in with Google', 'success');
+      // Re-sync with the new credential
+      fetchData(true);
+    },
+    [showToast]
+  );
+
+  // Sign out Google
+  const signOutGoogle = useCallback(() => {
+    clearIdToken();
+    setIdTokenState('');
+    setUserEmail(null);
+    try {
+      (window as any).google?.accounts?.id?.disableAutoSelect?.();
+    } catch {}
+    showToast('Signed out from Google', 'info');
+  }, [showToast]);
+
+  // Set PIN
+  const setPin = useCallback(async (pin: string) => {
+    const hash = await hashPin(pin);
+    localStorage.setItem(STORAGE_KEY_PIN_HASH, hash);
+    setHasPin(true);
+    setPinAttempts(0);
+    showToast('4-digit PIN lock configured', 'success');
+  }, [showToast]);
+
+  // Remove PIN
+  const removePin = useCallback(() => {
+    localStorage.removeItem(STORAGE_KEY_PIN_HASH);
+    setHasPin(false);
+    setIsPinLocked(false);
+    setPinAttempts(0);
+    showToast('PIN lock removed', 'info');
+  }, [showToast]);
+
+  // Lock app manually
+  const lockWithPin = useCallback(() => {
+    if (hasPin) {
+      setIsPinLocked(true);
+    }
+  }, [hasPin]);
+
+  // Verify and unlock PIN
+  const verifyAndUnlockPin = useCallback(
+    async (pin: string): Promise<{ success: boolean; attemptsRemaining?: number }> => {
+      const storedHash = localStorage.getItem(STORAGE_KEY_PIN_HASH);
+      if (!storedHash) {
+        setIsPinLocked(false);
+        return { success: true };
+      }
+
+      const match = await verifyPin(pin, storedHash);
+      if (match) {
+        setIsPinLocked(false);
+        setPinAttempts(0);
+        return { success: true };
+      } else {
+        const nextAttempts = pinAttempts + 1;
+        setPinAttempts(nextAttempts);
+        const remaining = Math.max(0, 5 - nextAttempts);
+
+        if (nextAttempts >= 5) {
+          // 5 wrong tries -> require Google sign-in again
+          clearIdToken();
+          setIdTokenState('');
+          setUserEmail(null);
+          setNeedsGoogleSignIn(true);
+          try {
+            (window as any).google?.accounts?.id?.disableAutoSelect?.();
+          } catch {}
+        }
+
+        return { success: false, attemptsRemaining: remaining };
+      }
+    },
+    [pinAttempts]
+  );
+
+  // 10 minutes background lock watcher
+  useEffect(() => {
+    const handleVisibility = () => {
+      const pinExists = Boolean(localStorage.getItem(STORAGE_KEY_PIN_HASH));
+      if (!pinExists) return;
+
+      if (document.visibilityState === 'hidden') {
+        backgroundTimeRef.current = Date.now();
+      } else if (document.visibilityState === 'visible') {
+        if (backgroundTimeRef.current) {
+          const elapsed = Date.now() - backgroundTimeRef.current;
+          if (elapsed > 10 * 60 * 1000) {
+            // > 10 minutes in background
+            setIsPinLocked(true);
+          }
+        }
+        backgroundTimeRef.current = null;
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
 
   // Load data function
   const fetchData = useCallback(
@@ -145,6 +315,9 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
           'Partner Issues': result.tables?.['Partner Issues'] || [],
           Support: result.tables?.Support || [],
           'Save State': result.tables?.['Save State'] || [],
+          Projects: result.tables?.Projects || [],
+          'Coach Config': result.tables?.['Coach Config'] || [],
+          'Coach Notes': result.tables?.['Coach Notes'] || [],
         };
 
         setTables(populatedTables);
@@ -152,12 +325,19 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
         if (result.serverDate) {
           setServerDate(result.serverDate);
         }
+        if (result.user?.email) {
+          setUserEmail(result.user.email);
+        }
+
         const now = new Date();
         setLastSynced(now);
         lastSyncTimeRef.current = now.getTime();
       } catch (err: any) {
         const errMsg = err?.message || 'Failed to sync with Google Sheet';
         setError(errMsg);
+        if (/sign\s*in/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
+        }
         showToast(errMsg, 'error');
       } finally {
         setIsLoading(false);
@@ -192,13 +372,12 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     return () => clearInterval(intervalId);
   }, [isConfigured, fetchData]);
 
-  // Tab focus & visibility change refresh (throttled to avoid rapid spam)
+  // Tab focus & visibility change refresh (throttled)
   useEffect(() => {
     if (!isConfigured) return;
 
     const handleFocusOrVisible = () => {
       const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
-      // If at least 30 seconds have passed since last sync
       if (
         document.visibilityState === 'visible' &&
         timeSinceLastSync > 30 * 1000
@@ -216,62 +395,18 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     };
   }, [isConfigured, fetchData]);
 
-  // Test connection method
-  const testConnection = useCallback(
-    async (testUrl?: string, testToken?: string) => {
-      const urlToTest = testUrl || config?.url;
-      const tokenToTest = testToken || config?.token;
-
-      if (!urlToTest || !tokenToTest) {
-        return { ok: false, error: 'API URL and Token must not be empty' };
-      }
-
-      try {
-        await loadAll({ url: urlToTest.trim(), token: tokenToTest.trim() });
-        return { ok: true };
-      } catch (err: any) {
-        return { ok: false, error: err?.message || 'Connection failed' };
-      }
-    },
-    [config]
-  );
-
   // Save config
   const saveConfig = useCallback(
-    async (newUrl: string, newToken: string): Promise<boolean> => {
-      saveConnectionConfig(newUrl, newToken);
-      const updated = { url: newUrl.trim(), token: newToken.trim() };
-      setConfig(updated);
-      showToast('Settings saved. Connecting...', 'info');
-      try {
-        const result = await loadAll(updated);
-        setTables({
-          Samples: result.tables?.Samples || [],
-          Leads: result.tables?.Leads || [],
-          Tasks: result.tables?.Tasks || [],
-          Agents: result.tables?.Agents || [],
-          Trainings: result.tables?.Trainings || [],
-          Partners: result.tables?.Partners || [],
-          'Partner Issues': result.tables?.['Partner Issues'] || [],
-          Support: result.tables?.Support || [],
-          'Save State': result.tables?.['Save State'] || [],
-        });
-        setLists(result.lists || {});
-        if (result.serverDate) setServerDate(result.serverDate);
-        const now = new Date();
-        setLastSynced(now);
-        lastSyncTimeRef.current = now.getTime();
-        setError(null);
-        showToast('Successfully connected to Google Sheet!', 'success');
-        return true;
-      } catch (err: any) {
-        const msg = err?.message || 'Failed to connect with provided settings';
-        setError(msg);
-        showToast(msg, 'error');
-        return false;
-      }
+    async (newUrl: string, newToken: string, newClientId?: string): Promise<boolean> => {
+      saveConnectionConfig(newUrl, newToken, newClientId);
+      const conf = getConnectionConfig();
+      setConfig(conf);
+      setError(null);
+      await fetchData(false);
+      showToast('Settings saved successfully', 'success');
+      return true;
     },
-    [showToast]
+    [fetchData, showToast]
   );
 
   // Clear config
@@ -280,141 +415,154 @@ export function OpsHubProvider({ children }: { children: React.ReactNode }) {
     setConfig(null);
     setTables(emptyTables);
     setLists({});
+    setServerDate('');
     setLastSynced(null);
-    showToast('Connection settings cleared.', 'info');
+    setError(null);
+    showToast('Configuration cleared', 'info');
   }, [showToast]);
 
-  // Create record
+  // Test connection
+  const testConnection = useCallback(
+    async (
+      testUrl?: string,
+      testToken?: string,
+      testIdToken?: string
+    ): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const conf = getConnectionConfig();
+        const urlToUse = testUrl || conf?.url;
+        const tokenToUse = testToken || conf?.token;
+        if (!urlToUse || !tokenToUse) {
+          return { ok: false, error: 'URL and Token are required' };
+        }
+        await loadAll({ url: urlToUse, token: tokenToUse, idToken: testIdToken });
+        return { ok: true };
+      } catch (err: any) {
+        const errMsg = err?.message || 'Connection test failed';
+        if (/sign\s*in/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
+        }
+        return { ok: false, error: errMsg };
+      }
+    },
+    []
+  );
+
+  // Optimistic createRecord
   const createRecord = useCallback(
     async <T extends BaseRecord = BaseRecord>(
       table: TableName,
       data: Record<string, any>
     ): Promise<T> => {
+      const prevTableData = tables[table] || [];
+
       try {
         const newRecord = await apiCreateRecord<T>(table, data);
-        // Append newly created record to store
         setTables((prev) => ({
           ...prev,
-          [table]: [...(prev[table] || []), newRecord as any],
+          [table]: [...(prev[table] as any[]), newRecord],
         }));
-        showToast(`Record created in ${table}`, 'success');
         return newRecord;
       } catch (err: any) {
-        const errorMsg = err?.message || `Failed to create record in ${table}`;
-        showToast(errorMsg, 'error');
-        throw err;
-      }
-    },
-    [showToast]
-  );
-
-  // Update record with Optimistic Update
-  const updateRecord = useCallback(
-    async <T extends BaseRecord = BaseRecord>(
-      table: TableName,
-      record: T,
-      changes: Record<string, any>
-    ): Promise<T> => {
-      // 1. Snapshot previous state for rollback
-      let previousRecord: any = null;
-      let targetIndex = -1;
-
-      const currentList = (tables[table] || []) as any[];
-      targetIndex = currentList.findIndex((item) => item._row === record._row);
-      if (targetIndex >= 0) {
-        previousRecord = currentList[targetIndex];
-      }
-
-      // 2. Apply optimistic update immediately
-      const optimisticallyUpdated = {
-        ...(previousRecord || record),
-        ...changes,
-      };
-
-      setTables((prev) => {
-        const list = [...(prev[table] || [])] as any[];
-        const idx = list.findIndex((item) => item._row === record._row);
-        if (idx >= 0) {
-          list[idx] = optimisticallyUpdated;
+        const errMsg = err?.message || `Failed to create record in ${table}`;
+        if (/sign\s*in/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
         }
-        return {
+        showToast(errMsg, 'error');
+        setTables((prev) => ({
           ...prev,
-          [table]: list as any,
-        };
-      });
-
-      // 3. Perform network call
-      try {
-        const serverUpdated = await apiUpdateRecord<T>(table, record, changes);
-
-        // Update with server confirmed record
-        setTables((prev) => {
-          const list = [...(prev[table] || [])] as any[];
-          const idx = list.findIndex((item) => item._row === record._row);
-          if (idx >= 0) {
-            list[idx] = serverUpdated;
-          }
-          return {
-            ...prev,
-            [table]: list as any,
-          };
-        });
-
-        return serverUpdated;
-      } catch (err: any) {
-        // 4. Rollback on failure!
-        if (previousRecord && targetIndex >= 0) {
-          setTables((prev) => {
-            const list = [...(prev[table] || [])] as any[];
-            list[targetIndex] = previousRecord;
-            return {
-              ...prev,
-              [table]: list as any,
-            };
-          });
-        }
-
-        const errorMsg =
-          err?.message || `Failed to update record in ${table}. Changes rolled back.`;
-        showToast(errorMsg, 'error');
+          [table]: prevTableData,
+        }));
         throw err;
       }
     },
     [tables, showToast]
   );
 
+  // Optimistic updateRecord
+  const updateRecord = useCallback(
+    async <T extends BaseRecord = BaseRecord>(
+      table: TableName,
+      record: T,
+      changes: Record<string, any>
+    ): Promise<T> => {
+      const prevTableData = tables[table] || [];
+
+      // Optimistic update
+      setTables((prev) => ({
+        ...prev,
+        [table]: (prev[table] as any[]).map((r) =>
+          r._row === record._row ? { ...r, ...changes } : r
+        ),
+      }));
+
+      try {
+        const updatedRecord = await apiUpdateRecord<T>(table, record, changes);
+        setTables((prev) => ({
+          ...prev,
+          [table]: (prev[table] as any[]).map((r) =>
+            r._row === record._row ? updatedRecord : r
+          ),
+        }));
+        return updatedRecord;
+      } catch (err: any) {
+        const errMsg = err?.message || `Failed to update record in ${table}`;
+        if (/sign\s*in/i.test(errMsg)) {
+          setNeedsGoogleSignIn(true);
+        }
+        showToast(errMsg, 'error');
+        setTables((prev) => ({
+          ...prev,
+          [table]: prevTableData,
+        }));
+        throw err;
+      }
+    },
+    [tables, showToast]
+  );
+
+  const value = {
+    tables,
+    lists,
+    serverDate,
+    isLoading,
+    isRefreshing,
+    error,
+    lastSynced,
+    config,
+    isConfigured,
+    clientId,
+    idToken: idTokenState,
+    userEmail,
+    hasPin,
+    isPinLocked,
+    needsGoogleSignIn,
+    toasts,
+    showToast,
+    removeToast,
+    saveConfig,
+    clearConfig,
+    refresh,
+    testConnection,
+    createRecord,
+    updateRecord,
+    setGoogleCredential,
+    signOutGoogle,
+    setPin,
+    removePin,
+    verifyAndUnlockPin,
+    lockWithPin,
+  };
+
   return (
-    <OpsHubContext.Provider
-      value={{
-        tables,
-        lists,
-        serverDate,
-        isLoading,
-        isRefreshing,
-        error,
-        lastSynced,
-        config,
-        isConfigured,
-        toasts,
-        showToast,
-        removeToast,
-        saveConfig,
-        clearConfig,
-        refresh,
-        testConnection,
-        createRecord,
-        updateRecord,
-      }}
-    >
-      {children}
-    </OpsHubContext.Provider>
+    <OpsHubContext.Provider value={value}>{children}</OpsHubContext.Provider>
   );
 }
 
 export function useOpsHub(): OpsHubContextType {
-  const ctx = useContext(OpsHubContext);
-  if (!ctx) {
+  const context = useContext(OpsHubContext);
+  if (!context) {
     throw new Error('useOpsHub must be used within an OpsHubProvider');
   }
-  return ctx;
+  return context;
 }

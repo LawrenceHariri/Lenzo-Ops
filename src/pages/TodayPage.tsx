@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   AlertCircle,
+  Bot,
   Calendar,
   Check,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   Clock,
   ExternalLink,
   Flame,
+  FolderGit2,
   Headphones,
   MapPin,
   MessageSquare,
@@ -22,12 +24,14 @@ import {
   PhoneCall,
   Plus,
   RefreshCw,
+  Send,
   Sparkles,
   Truck,
   User,
   Users,
 } from 'lucide-react';
 import { MarkShippedModal } from '../components/MarkShippedModal';
+import { ProjectDrawer } from '../components/ProjectDrawer';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { SaveStateModal } from '../components/SaveStateModal';
 import { TaskEditDrawer } from '../components/TaskEditDrawer';
@@ -49,7 +53,7 @@ import {
   todayTasks,
 } from '../logic';
 import { useOpsHub } from '../store';
-import { LeadRecord, SampleRecord, TaskRecord } from '../types';
+import { CoachNoteRecord, LeadRecord, ProjectRecord, SampleRecord, TaskRecord } from '../types';
 import { fireTaskDoneConfetti } from '../utils/confetti';
 
 interface TodayPageProps {
@@ -80,6 +84,115 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
   const [callDoneSample, setCallDoneSample] = useState<SampleRecord | null>(null);
   const [callOutcome, setCallOutcome] = useState('');
   const [isSavingCallOutcome, setIsSavingCallOutcome] = useState(false);
+
+  // Claude Asks section
+  const [claudeAnswerDrafts, setClaudeAnswerDrafts] = useState<Record<string, string>>({});
+  const [submittingNoteId, setSubmittingNoteId] = useState<string | null>(null);
+
+  // Projects State
+  const [selectedProjectForDrawer, setSelectedProjectForDrawer] = useState<ProjectRecord | null>(null);
+  const [offRampInitialProject, setOffRampInitialProject] = useState<string | undefined>(undefined);
+
+  const projectsList = useMemo(() => {
+    const raw = tables.Projects || [];
+    const active = raw.filter((p) => p.Status === 'Active');
+    const waiting = raw.filter((p) => p.Status === 'Waiting');
+    return [...active, ...waiting];
+  }, [tables.Projects]);
+
+  const getProjectFreshness = (lastSaved: string) => {
+    if (!lastSaved || !/^\d{4}-\d{2}-\d{2}$/.test(lastSaved)) {
+      return { dot: 'bg-rose-500', text: 'Never saved' };
+    }
+    const p1 = lastSaved.split('-').map(Number);
+    const p2 = currentDate.split('-').map(Number);
+    const d1 = new Date(p1[0], p1[1] - 1, p1[2]);
+    const d2 = new Date(p2[0], p2[1] - 1, p2[2]);
+    const diffDays = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
+
+    if (diffDays <= 1) {
+      return { dot: 'bg-emerald-500', text: diffDays === 0 ? 'Today' : 'Yesterday' };
+    } else if (diffDays <= 7) {
+      return { dot: 'bg-amber-500', text: `${diffDays}d ago` };
+    } else {
+      return { dot: 'bg-rose-500', text: `${diffDays}d ago` };
+    }
+  };
+
+  const claudeNotes = useMemo(() => {
+    return (tables['Coach Notes'] || []).filter(
+      (n) =>
+        n.From === 'Claude' &&
+        (n.Status === 'Open' || (!n.Status && !n.Answer)) &&
+        (n.Type === 'Question' || n.Type === 'Brief')
+    );
+  }, [tables['Coach Notes']]);
+
+  const handleDismissBrief = async (note: CoachNoteRecord) => {
+    try {
+      await updateRecord('Coach Notes', note, { Status: 'Done' });
+      showToast('Brief acknowledged', 'info');
+    } catch {
+      // Toast handles error
+    }
+  };
+
+  const handleAnswerQuestion = async (note: CoachNoteRecord) => {
+    const key = note.NoteID || String(note._row);
+    const draft = (claudeAnswerDrafts[key] || '').trim();
+    if (!draft) return;
+
+    setSubmittingNoteId(key);
+    try {
+      await updateRecord('Coach Notes', note, {
+        Answer: draft,
+        Status: 'Answered',
+        'Answered On': currentDate,
+      });
+      fireTaskDoneConfetti();
+      showToast('Answer sent to Claude!', 'success');
+      setClaudeAnswerDrafts((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    } catch {
+      // Toast handles error
+    } finally {
+      setSubmittingNoteId(null);
+    }
+  };
+
+  // Pinned One Thing from Morning On-Ramp
+  const [pinnedOneThing, setPinnedOneThing] = useState<{
+    text: string;
+    area: string;
+    date: string;
+    completed: boolean;
+  } | null>(() => {
+    try {
+      const raw = localStorage.getItem(`opshub.pinned_one_thing.${currentDate}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && !parsed.completed && parsed.text) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  const handleCompletePinnedOneThing = () => {
+    if (!pinnedOneThing) return;
+    const updated = { ...pinnedOneThing, completed: true };
+    localStorage.setItem(
+      `opshub.pinned_one_thing.${currentDate}`,
+      JSON.stringify(updated)
+    );
+    setPinnedOneThing(null);
+    fireTaskDoneConfetti();
+    showToast('Nice. One less thing.', 'success');
+  };
 
   // Collapsible section states (all open by default)
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
@@ -183,49 +296,108 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
           </p>
         </div>
 
-        {/* Circular Progress Indicator */}
-        <div className="flex items-center gap-4 bg-stone-50 p-4 rounded-2xl border border-stone-100 shrink-0">
-          <div className="relative w-14 h-14 flex items-center justify-center">
-            <svg className="w-14 h-14 -rotate-90" viewBox="0 0 36 36">
-              <path
-                className="text-stone-200"
-                strokeWidth="3.5"
-                stroke="currentColor"
-                fill="none"
-                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-              />
-              <path
-                className="text-emerald-500 transition-all duration-500 ease-out"
-                strokeDasharray={`${progress.percentage}, 100`}
-                strokeWidth="3.5"
-                strokeLinecap="round"
-                stroke="currentColor"
-                fill="none"
-                d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-              />
-            </svg>
-            <span className="absolute font-mono font-bold text-xs text-stone-800">
-              {progress.percentage}%
-            </span>
+        {/* Stats: Streak & Circular Progress Indicator */}
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Streak Badge */}
+          <div className="flex items-center gap-3 bg-stone-50 px-4 py-3 rounded-2xl border border-stone-100 shrink-0">
+            <div className="w-10 h-10 rounded-xl bg-amber-100/80 border border-amber-200/80 flex items-center justify-center text-amber-600">
+              <Flame className="w-5 h-5 fill-amber-500 text-amber-500" />
+            </div>
+            <div>
+              <div className="font-mono text-sm font-bold text-stone-900">
+                {streak} {streak === 1 ? 'day' : 'days'}
+              </div>
+              <div className="text-[11px] text-stone-500 font-medium">
+                Save State streak
+              </div>
+            </div>
           </div>
 
-          <div>
-            <div className="text-xs font-semibold text-stone-900">
-              {progress.done} of {progress.total} done
+          {/* Circular Progress Indicator */}
+          <div className="flex items-center gap-4 bg-stone-50 p-4 rounded-2xl border border-stone-100 shrink-0">
+            <div className="relative w-14 h-14 flex items-center justify-center">
+              <svg className="w-14 h-14 -rotate-90" viewBox="0 0 36 36">
+                <path
+                  className="text-stone-200"
+                  strokeWidth="3.5"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+                <path
+                  className="text-emerald-500 transition-all duration-500 ease-out"
+                  strokeDasharray={`${progress.percentage}, 100`}
+                  strokeWidth="3.5"
+                  strokeLinecap="round"
+                  stroke="currentColor"
+                  fill="none"
+                  d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+                />
+              </svg>
+              <span className="absolute font-mono font-bold text-xs text-stone-800">
+                {progress.percentage}%
+              </span>
             </div>
-            <div className="text-[11px] text-stone-500">
-              {progress.total === 0
-                ? 'No tasks due today'
-                : progress.done === progress.total
-                ? 'All caught up! 🎉'
-                : 'Tasks due today + overdue'}
+
+            <div>
+              <div className="text-xs font-semibold text-stone-900">
+                {progress.done} of {progress.total} done
+              </div>
+              <div className="text-[11px] text-stone-500">
+                {progress.total === 0
+                  ? 'No tasks due today'
+                  : progress.done === progress.total
+                  ? 'All caught up! 🎉'
+                  : 'Tasks due today + overdue'}
+              </div>
             </div>
           </div>
         </div>
       </section>
 
       {/* "Your One Thing" Card */}
-      {oneThing ? (
+      {pinnedOneThing ? (
+        <section className="bg-gradient-to-br from-amber-50/70 via-white to-stone-50 rounded-3xl p-6 sm:p-7 border-2 border-amber-300 shadow-sm relative overflow-hidden animate-in fade-in">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-amber-400 text-amber-950 font-bold text-xs shadow-xs">
+                ★
+              </span>
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-900">
+                Your one thing right now
+              </span>
+            </div>
+            <span className="text-xs font-medium text-amber-800 bg-amber-100/80 px-2.5 py-0.5 rounded-full border border-amber-200">
+              Pinned from Morning On-Ramp ({pinnedOneThing.area})
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-2">
+            <div className="space-y-1">
+              <h2 className="text-lg sm:text-xl font-bold text-stone-900 leading-snug">
+                {pinnedOneThing.text}
+              </h2>
+              <div className="flex items-center gap-2 text-xs text-stone-600">
+                <span className="px-2 py-0.5 rounded-md bg-stone-100 text-stone-700 font-semibold text-[11px]">
+                  {pinnedOneThing.area}
+                </span>
+                <span>•</span>
+                <span className="text-stone-500">
+                  Priority target from your morning recall
+                </span>
+              </div>
+            </div>
+
+            <button
+              onClick={handleCompletePinnedOneThing}
+              className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-2xl text-sm font-semibold bg-stone-900 hover:bg-black text-white shadow-md transition-all active:scale-95 shrink-0"
+            >
+              <Check className="w-4 h-4 text-emerald-400 stroke-[3]" />
+              <span>Done</span>
+            </button>
+          </div>
+        </section>
+      ) : oneThing ? (
         <section className="bg-gradient-to-br from-amber-50/70 via-white to-stone-50 rounded-3xl p-6 sm:p-7 border-2 border-amber-300 shadow-sm relative overflow-hidden">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
@@ -293,6 +465,182 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
           <p className="text-xs text-stone-500 mt-0.5">
             You are completely on top of overdue tasks and urgent follow-ups.
           </p>
+        </section>
+      )}
+
+      {/* Claude asks section */}
+      {claudeNotes.length > 0 && (
+        <section className="bg-white rounded-3xl border border-indigo-100 shadow-sm overflow-hidden">
+          <div className="p-5 bg-gradient-to-r from-indigo-50/80 via-white to-indigo-50/40 border-b border-indigo-100 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-xs">
+                <Bot className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="font-bold text-stone-900 text-sm">
+                  Claude asks
+                </h3>
+                <p className="text-[11px] text-stone-500">
+                  Open briefs and questions waiting for your input
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+              {claudeNotes.length}
+            </span>
+          </div>
+
+          <div className="divide-y divide-stone-100">
+            {claudeNotes.map((note) => {
+              const noteKey = note.NoteID || String(note._row);
+              const isBrief = note.Type === 'Brief';
+              const draft = claudeAnswerDrafts[noteKey] || '';
+              const isSubmitting = submittingNoteId === noteKey;
+
+              return (
+                <div
+                  key={noteKey}
+                  className="p-5 space-y-3 hover:bg-stone-50/50 transition-colors"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                          isBrief
+                            ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                        }`}
+                      >
+                        {isBrief ? 'Brief' : 'Question'}
+                      </span>
+                      {note.Project && (
+                        <span className="px-2 py-0.5 rounded-md bg-stone-100 text-stone-700 text-xs font-medium">
+                          {note.Project}
+                        </span>
+                      )}
+                    </div>
+                    {note.Date && (
+                      <span className="text-[11px] font-mono text-stone-400">
+                        {note.Date}
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-sm font-medium text-stone-900 leading-relaxed whitespace-pre-wrap">
+                    {note.Text}
+                  </p>
+
+                  {isBrief ? (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        onClick={() => handleDismissBrief(note)}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-stone-900 hover:bg-black text-white shadow-xs transition-all active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Got it</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 pt-1">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={draft}
+                          onChange={(e) =>
+                            setClaudeAnswerDrafts((prev) => ({
+                              ...prev,
+                              [noteKey]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              handleAnswerQuestion(note);
+                            }
+                          }}
+                          placeholder="Type your answer for Claude..."
+                          className="flex-1 px-3.5 py-2 text-xs bg-stone-50 border border-stone-200 rounded-xl text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
+                        />
+                        <button
+                          disabled={!draft.trim() || isSubmitting}
+                          onClick={() => handleAnswerQuestion(note)}
+                          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white shadow-xs transition-colors shrink-0"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>{isSubmitting ? 'Saving...' : 'Send'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* Projects Strip: one small card per Project with Status "Active" (then "Waiting") */}
+      {projectsList.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2">
+              <FolderGit2 className="w-4 h-4 text-stone-600" />
+              <h3 className="font-bold text-stone-900 text-xs uppercase tracking-wider">
+                Projects
+              </h3>
+            </div>
+            <span className="text-[11px] font-mono text-stone-400">
+              {projectsList.filter((p) => p.Status === 'Active').length} active
+            </span>
+          </div>
+
+          <div className="flex items-stretch gap-3 overflow-x-auto pb-2 pt-0.5 no-scrollbar scroll-smooth">
+            {projectsList.map((proj) => {
+              const fresh = getProjectFreshness(proj['Last Saved']);
+              return (
+                <button
+                  key={proj.ProjectID || proj._row}
+                  type="button"
+                  onClick={() => setSelectedProjectForDrawer(proj)}
+                  className="w-64 sm:w-72 shrink-0 p-4 bg-white hover:bg-stone-50/80 rounded-2xl border border-stone-200/90 shadow-2xs hover:shadow-xs transition-all text-left flex flex-col justify-between gap-3 group active:scale-[0.99]"
+                >
+                  <div className="space-y-1.5 w-full">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span
+                          className={`w-2.5 h-2.5 rounded-full shrink-0 ${fresh.dot}`}
+                          title={`Freshness: ${fresh.text}`}
+                        />
+                        <h4 className="font-bold text-sm text-stone-900 truncate group-hover:text-indigo-600 transition-colors">
+                          {proj.Project}
+                        </h4>
+                      </div>
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${
+                          proj.Status === 'Active'
+                            ? 'bg-indigo-50 text-indigo-700 border border-indigo-100'
+                            : 'bg-stone-100 text-stone-600'
+                        }`}
+                      >
+                        {proj.Status}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-stone-600 line-clamp-2 leading-relaxed">
+                      {proj['Next Action'] || 'No next action'}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[11px] text-stone-400 pt-1.5 border-t border-stone-100 w-full font-mono">
+                    <span className="truncate">
+                      {proj.Category || 'Project'}
+                    </span>
+                    <span>{fresh.text}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
         </section>
       )}
 
@@ -906,6 +1254,15 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
       )}
 
       {/* Modals & Drawers */}
+      <ProjectDrawer
+        project={selectedProjectForDrawer}
+        onClose={() => setSelectedProjectForDrawer(null)}
+        onStartOffRamp={(projectName) => {
+          setOffRampInitialProject(projectName);
+          setSaveStateOpen(true);
+        }}
+      />
+
       <QuickAddModal
         isOpen={quickAddOpen}
         onClose={() => setQuickAddOpen(false)}
@@ -923,7 +1280,11 @@ export const TodayPage: React.FC<TodayPageProps> = ({ onNavigateTab }) => {
 
       <SaveStateModal
         isOpen={saveStateOpen}
-        onClose={() => setSaveStateOpen(false)}
+        onClose={() => {
+          setSaveStateOpen(false);
+          setOffRampInitialProject(undefined);
+        }}
+        initialProject={offRampInitialProject}
       />
     </div>
   );

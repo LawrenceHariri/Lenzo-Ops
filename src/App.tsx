@@ -7,10 +7,15 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Clock,
+  Lock,
   RefreshCw,
   Settings as SettingsIcon,
+  Shield,
 } from 'lucide-react';
+import { GoogleSignInModal } from './components/GoogleSignInModal';
 import { Navigation, NavTab } from './components/Navigation';
+import { OnRampScreen } from './components/OnRampScreen';
+import { PinPadScreen } from './components/PinPadScreen';
 import { SettingsScreen } from './components/SettingsScreen';
 import { ToastContainer } from './components/ToastContainer';
 import {
@@ -40,12 +45,22 @@ function MainApp() {
     isRefreshing,
     isLoading,
     error,
+    isPinLocked,
+    hasPin,
+    lockWithPin,
+    needsGoogleSignIn,
+    userEmail,
   } = useOpsHub();
 
   const [currentTab, setCurrentTab] = useState<NavTab>('today');
   const [showSettings, setShowSettings] = useState(false);
 
   const currentDate = today(serverDate);
+
+  const [hasCompletedOnRampToday, setHasCompletedOnRampToday] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem(`opshub.onramp.${currentDate}`) === 'true';
+  });
 
   // Compute navigation badge counts
   const counts = useMemo(() => {
@@ -68,6 +83,16 @@ function MainApp() {
     };
   }, [tables, currentDate]);
 
+  // If PIN lock is active, show clean PIN pad before any data
+  if (isPinLocked) {
+    return (
+      <>
+        <ToastContainer />
+        <PinPadScreen onSuccess={() => {}} />
+      </>
+    );
+  }
+
   // If credentials are not configured, show initial setup screen
   if (!isConfigured) {
     return (
@@ -75,6 +100,49 @@ function MainApp() {
         <ToastContainer />
         <SettingsScreen isInitialSetup={true} />
       </div>
+    );
+  }
+
+  // If Google authentication is required by API or lockout
+  if (needsGoogleSignIn) {
+    return (
+      <div className="min-h-screen bg-[#F7F7F5] flex flex-col items-center justify-center p-4">
+        <ToastContainer />
+        <div className="w-full max-w-sm bg-white rounded-3xl p-8 border border-stone-200 shadow-xl text-center space-y-5 animate-in fade-in">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto">
+            <Shield className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-xl font-bold text-stone-900">Sign in with Google</h2>
+            <p className="text-xs text-stone-500">
+              Your Google identity is required to authenticate requests to the Google Sheet.
+            </p>
+          </div>
+          <GoogleSignInModal forceShow={true} />
+        </div>
+      </div>
+    );
+  }
+
+  // Calm initial loading state while syncing first payload
+  if (isLoading && !lastSynced) {
+    return (
+      <div className="min-h-screen bg-[#F7F7F5] flex flex-col items-center justify-center p-4 text-center">
+        <div className="w-10 h-10 rounded-2xl bg-stone-900 text-white flex items-center justify-center font-bold text-base mb-3 shadow-sm animate-pulse">
+          L
+        </div>
+        <p className="text-xs font-medium text-stone-500">Syncing Lenzo Ops Hub...</p>
+      </div>
+    );
+  }
+
+  // If user has not completed morning on-ramp today and Save State records exist
+  if (!hasCompletedOnRampToday && (tables['Save State']?.length || 0) > 0) {
+    return (
+      <>
+        <ToastContainer />
+        <OnRampScreen onComplete={() => setHasCompletedOnRampToday(true)} />
+      </>
     );
   }
 
@@ -133,6 +201,25 @@ function MainApp() {
                 />
               </button>
             </div>
+
+            {/* Signed-in Google email badge */}
+            {userEmail && (
+              <div className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-2xl bg-white border border-stone-200/80 text-xs text-stone-600 shadow-xs">
+                <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="font-mono text-[11px] truncate max-w-[160px]">{userEmail}</span>
+              </div>
+            )}
+
+            {/* Quick lock with PIN button */}
+            {hasPin && (
+              <button
+                onClick={() => lockWithPin()}
+                className="flex p-2 rounded-2xl bg-white border border-stone-200/80 hover:bg-stone-100 text-stone-500 hover:text-stone-800 transition-colors shadow-xs"
+                title="Lock with PIN"
+              >
+                <Lock className="w-4 h-4" />
+              </button>
+            )}
 
             {/* Quick settings shortcut on desktop */}
             <button

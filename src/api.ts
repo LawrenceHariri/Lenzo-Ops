@@ -13,50 +13,82 @@ import {
 
 export const STORAGE_KEY_URL = 'opshub.url';
 export const STORAGE_KEY_TOKEN = 'opshub.token';
+export const STORAGE_KEY_CLIENT_ID = 'opshub.clientId';
+export const STORAGE_KEY_PIN_HASH = 'opshub.pinHash';
 
-export function getConnectionConfig(): { url: string; token: string } | null {
+// In-memory credential storage only (never persisted in localStorage)
+let inMemoryIdToken: string = '';
+
+export function getIdToken(): string {
+  return inMemoryIdToken;
+}
+
+export function setIdToken(token: string): void {
+  inMemoryIdToken = token ? token.trim() : '';
+}
+
+export function clearIdToken(): void {
+  inMemoryIdToken = '';
+}
+
+export function getConnectionConfig(): { url: string; token: string; clientId: string } | null {
   if (typeof window === 'undefined') return null;
   const url = localStorage.getItem(STORAGE_KEY_URL)?.trim() || '';
   const token = localStorage.getItem(STORAGE_KEY_TOKEN)?.trim() || '';
+  const clientId = localStorage.getItem(STORAGE_KEY_CLIENT_ID)?.trim() || '';
   if (!url || !token) return null;
-  return { url, token };
+  return { url, token, clientId };
 }
 
-export function saveConnectionConfig(url: string, token: string): void {
+export function saveConnectionConfig(url: string, token: string, clientId?: string): void {
   if (typeof window === 'undefined') return;
   localStorage.setItem(STORAGE_KEY_URL, url.trim());
   localStorage.setItem(STORAGE_KEY_TOKEN, token.trim());
+  if (clientId !== undefined) {
+    localStorage.setItem(STORAGE_KEY_CLIENT_ID, clientId.trim());
+  }
 }
 
 export function clearConnectionConfig(): void {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(STORAGE_KEY_URL);
   localStorage.removeItem(STORAGE_KEY_TOKEN);
+  localStorage.removeItem(STORAGE_KEY_CLIENT_ID);
+  clearIdToken();
 }
 
 /**
  * 1) READ everything
- * GET {URL}?token={TOKEN}&action=all
- * redirect: "follow"
+ * POST {URL} with header "Content-Type: text/plain;charset=utf-8" and redirect: "follow"
+ * Body: { token, idToken, action: "all" }
+ * Response: { ok: true, result: { tables, lists, serverDate, user } }
  */
 export async function loadAll(
-  overrideConfig?: { url: string; token: string }
+  overrideConfig?: { url: string; token: string; idToken?: string }
 ): Promise<AllDataResult> {
-  const config = overrideConfig || getConnectionConfig();
-  if (!config?.url || !config?.token) {
+  const currentConfig = getConnectionConfig();
+  const url = overrideConfig?.url || currentConfig?.url;
+  const token = overrideConfig?.token || currentConfig?.token;
+  const idToken = overrideConfig?.idToken !== undefined ? overrideConfig.idToken : inMemoryIdToken;
+
+  if (!url || !token) {
     throw new Error('API URL or API Token is missing. Please configure settings.');
   }
 
-  const { url, token } = config;
-  const separator = url.includes('?') ? '&' : '?';
-  const requestUrl = `${url}${separator}token=${encodeURIComponent(
-    token
-  )}&action=all`;
+  const payload = {
+    token,
+    idToken: idToken || '',
+    action: 'all',
+  };
 
   let response: Response;
   try {
-    response = await fetch(requestUrl, {
-      method: 'GET',
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8',
+      },
+      body: JSON.stringify(payload),
       redirect: 'follow',
     });
   } catch (err: any) {
@@ -81,21 +113,25 @@ export async function loadAll(
 
 /**
  * 2) CREATE a row
- * POST {URL} with header "Content-Type: text/plain;charset=utf-8"
- * Body: JSON.stringify({ token, action: "create", table, data: { ...columns } })
+ * POST {URL} with header "Content-Type: text/plain;charset=utf-8" and redirect: "follow"
+ * Body: JSON.stringify({ token, idToken, action: "create", table, data: { ...columns } })
  * Response: { ok: true, result: Record }
  */
 export async function createRecord<T extends BaseRecord = BaseRecord>(
   table: TableName,
-  data: Record<string, any>
+  data: Record<string, any>,
+  overrideIdToken?: string
 ): Promise<T> {
   const config = getConnectionConfig();
   if (!config?.url || !config?.token) {
     throw new Error('API URL or API Token is missing. Please configure settings.');
   }
 
+  const idToken = overrideIdToken !== undefined ? overrideIdToken : inMemoryIdToken;
+
   const payload = {
     token: config.token,
+    idToken: idToken || '',
     action: 'create',
     table,
     data,
@@ -133,13 +169,15 @@ export async function createRecord<T extends BaseRecord = BaseRecord>(
 
 /**
  * 3) UPDATE a row
- * Same POST, body: { token, action: "update", table, row: record._row, data: { ...only the changed columns, PLUS the record's ID column } }
+ * POST {URL} with header "Content-Type: text/plain;charset=utf-8" and redirect: "follow"
+ * Body: { token, idToken, action: "update", table, row: record._row, data: { ...only the changed columns, PLUS the record's ID column } }
  * Response: { ok: true, result: Record }
  */
 export async function updateRecord<T extends BaseRecord = BaseRecord>(
   table: TableName,
   record: T,
-  changes: Record<string, any>
+  changes: Record<string, any>,
+  overrideIdToken?: string
 ): Promise<T> {
   const config = getConnectionConfig();
   if (!config?.url || !config?.token) {
@@ -158,8 +196,11 @@ export async function updateRecord<T extends BaseRecord = BaseRecord>(
     dataToSend[idField] = record[idField];
   }
 
+  const idToken = overrideIdToken !== undefined ? overrideIdToken : inMemoryIdToken;
+
   const payload = {
     token: config.token,
+    idToken: idToken || '',
     action: 'update',
     table,
     row: record._row,

@@ -125,10 +125,43 @@ export interface SupportRecord extends BaseRecord {
 export interface SaveStateRecord extends BaseRecord {
   Date: string;
   Area: string;
+  Project?: string;
   "Next Action": string;
   "In My Head": string;
   "Don't Redo": string;
   Energy: string;
+}
+
+export interface CoachConfigRecord extends BaseRecord {
+  Key: string;
+  Value: string;
+  Updated?: string;
+}
+
+export interface CoachNoteRecord extends BaseRecord {
+  NoteID?: string;
+  Date: string;
+  Project?: string;
+  From: string; // "Claude" | "Coach"
+  Type: string; // "Question" | "Brief" | "Interview"
+  Text: string;
+  Status: string; // "Open" | "Answered" | "Done"
+  Answer?: string;
+  "Answered On"?: string;
+}
+
+export interface ProjectRecord extends BaseRecord {
+  ProjectID?: string;
+  Project: string;
+  Category?: string;
+  Status: string; // "Active" | "Waiting"
+  Priority?: string; // "High" | "Medium" | "Low"
+  "Next Action": string;
+  "In My Head": string;
+  "Don't Redo": string;
+  "Last Saved": string;
+  "Where It Lives"?: string;
+  Notes?: string;
 }
 
 export type TableName =
@@ -140,7 +173,10 @@ export type TableName =
   | "Partners"
   | "Partner Issues"
   | "Support"
-  | "Save State";
+  | "Save State"
+  | "Projects"
+  | "Coach Config"
+  | "Coach Notes";
 
 export const TABLE_NAMES: TableName[] = [
   "Samples",
@@ -152,6 +188,9 @@ export const TABLE_NAMES: TableName[] = [
   "Partner Issues",
   "Support",
   "Save State",
+  "Projects",
+  "Coach Config",
+  "Coach Notes",
 ];
 
 export interface TablesData {
@@ -164,6 +203,9 @@ export interface TablesData {
   "Partner Issues": PartnerIssueRecord[];
   Support: SupportRecord[];
   "Save State": SaveStateRecord[];
+  Projects: ProjectRecord[];
+  "Coach Config": CoachConfigRecord[];
+  "Coach Notes": CoachNoteRecord[];
 }
 
 export interface DropdownLists {
@@ -177,6 +219,10 @@ export interface DropdownLists {
   IssueStatus?: string[];
   Channel?: string[];
   Energy?: string[];
+  ProjectStatus?: string[];
+  NoteFrom?: string[];
+  NoteType?: string[];
+  NoteStatus?: string[];
   [key: string]: string[] | undefined;
 }
 
@@ -192,10 +238,18 @@ export interface ApiResponseError {
 
 export type ApiResponse<T = any> = ApiResponseSuccess<T> | ApiResponseError;
 
+export interface UserProfile {
+  email?: string;
+  name?: string;
+  picture?: string;
+  [key: string]: any;
+}
+
 export interface AllDataResult {
   tables: TablesData;
   lists: DropdownLists;
   serverDate: string; // "YYYY-MM-DD"
+  user?: UserProfile | null;
 }
 
 export const TABLE_ID_FIELDS: Record<TableName, string | null> = {
@@ -208,4 +262,7 @@ export const TABLE_ID_FIELDS: Record<TableName, string | null> = {
   "Partner Issues": "IssueID",
   Support: "TicketID",
   "Save State": null,
+  Projects: "ProjectID",
+  "Coach Config": "Key",
+  "Coach Notes": "NoteID",
 };
