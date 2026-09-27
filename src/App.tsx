@@ -7,6 +7,8 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   Clock,
+  ExternalLink,
+  FileSpreadsheet,
   Lock,
   RefreshCw,
   Settings as SettingsIcon,
@@ -37,6 +39,8 @@ import { OpsHubProvider, useOpsHub } from './store';
 
 function MainApp() {
   const {
+    mode,
+    sheetConfig,
     isConfigured,
     serverDate,
     tables,
@@ -180,6 +184,23 @@ function MainApp() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Connected Google Sheet Pill */}
+            {mode === 'sheets' && sheetConfig?.sheetId && (
+              <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-emerald-50 border border-emerald-200/80 text-xs text-emerald-800 shadow-2xs">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
+                <span className="font-medium truncate max-w-[140px]">{sheetConfig.sheetName || 'Google Sheet'}</span>
+                <a
+                  href={`https://docs.google.com/spreadsheets/d/${sheetConfig.sheetId}/edit`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-emerald-700 hover:text-emerald-900 ml-0.5"
+                  title="Open spreadsheet in new tab"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
+
             {/* Last synced & Refresh button */}
             <div className="flex items-center gap-2 text-xs bg-white border border-stone-200/80 rounded-2xl px-3 py-1.5 text-stone-500 shadow-xs">
               <Clock className="w-3.5 h-3.5 text-stone-400" />

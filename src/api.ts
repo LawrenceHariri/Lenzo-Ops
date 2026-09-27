@@ -15,6 +15,45 @@ export const STORAGE_KEY_URL = 'opshub.url';
 export const STORAGE_KEY_TOKEN = 'opshub.token';
 export const STORAGE_KEY_CLIENT_ID = 'opshub.clientId';
 export const STORAGE_KEY_PIN_HASH = 'opshub.pinHash';
+export const STORAGE_KEY_MODE = 'opshub.mode'; // 'sheets' | 'appscript'
+export const STORAGE_KEY_SHEET_ID = 'opshub.sheetId';
+export const STORAGE_KEY_SHEET_NAME = 'opshub.sheetName';
+
+export type ConnectionMode = 'sheets' | 'appscript';
+
+export function getConnectionMode(): ConnectionMode {
+  if (typeof window === 'undefined') return 'sheets';
+  const mode = localStorage.getItem(STORAGE_KEY_MODE);
+  if (mode === 'appscript') return 'appscript';
+  return 'sheets';
+}
+
+export function setConnectionMode(mode: ConnectionMode): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_MODE, mode);
+}
+
+export function getSheetConfig(): { sheetId: string; sheetName: string } | null {
+  if (typeof window === 'undefined') return null;
+  const sheetId = localStorage.getItem(STORAGE_KEY_SHEET_ID)?.trim() || '';
+  const sheetName = localStorage.getItem(STORAGE_KEY_SHEET_NAME)?.trim() || 'Google Sheet';
+  if (!sheetId) return null;
+  return { sheetId, sheetName };
+}
+
+export function saveSheetConfig(sheetId: string, sheetName?: string): void {
+  if (typeof window === 'undefined') return;
+  localStorage.setItem(STORAGE_KEY_SHEET_ID, sheetId.trim());
+  if (sheetName) {
+    localStorage.setItem(STORAGE_KEY_SHEET_NAME, sheetName.trim());
+  }
+}
+
+export function clearSheetConfig(): void {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(STORAGE_KEY_SHEET_ID);
+  localStorage.removeItem(STORAGE_KEY_SHEET_NAME);
+}
 
 // In-memory credential storage only (never persisted in localStorage)
 let inMemoryIdToken: string = '';
